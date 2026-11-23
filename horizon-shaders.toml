@@ -1,0 +1,901 @@
+schema = 1
+id = "photon_prototype"
+name = "Proton"
+version = "1.2.8"
+api = "0.2"
+description = "Proton — a high-performance native Horizon shader with temporal hybrid GI, 3D colored LPV, Decima-inspired distant shadows, volumetric clouds & god rays, neural foliage/water optics, and RDR2 filmic grading."
+authors = ["Based on Photon by SixthSurge"]
+shared = ["common.wgsl"]
+
+[frame]
+blend = "linear"
+fog = "pack"
+
+[sky]
+file = "sky.wgsl"
+clouds = false
+sun = false
+moon = false
+stars = false
+reads = ["sky_lighting", "cloud_environment_map", "cloud_aux"]
+files = ["atmosphere_read.wgsl", "clouds.wgsl", "environment.wgsl", "celestial.wgsl", "rainbow.wgsl", "air_fog_common.wgsl", "shadow_projection.wgsl"]
+
+[material]
+file = "material.wgsl"
+reads = ["sky_lighting", "cloud_environment_map", "cloud_aux", "taa_history_previous", "colored_light_volume_previous", "terrain_heightfield_previous"]
+files = ["atmosphere_read.wgsl", "skylight_mapping.wgsl", "lpv_common.wgsl", "heightfield_common.wgsl", "clouds.wgsl", "shadow_transmission.wgsl", "world_lighting.wgsl", "conductors.wgsl", "surface_data.wgsl", "wet_surfaces.wgsl", "environment.wgsl", "environment_read.wgsl", "cloud_shadow_read.wgsl", "reflection_options.wgsl", "reflection_history_read.wgsl", "water_options.wgsl", "water.wgsl", "translucent.wgsl", "celestial.wgsl", "shadow_projection.wgsl", "pack_shadow_read.wgsl"]
+
+[entity]
+file = "entity.wgsl"
+reads = ["sky_lighting", "cloud_aux", "colored_light_volume_previous"]
+files = ["atmosphere_read.wgsl", "skylight_mapping.wgsl", "lpv_common.wgsl", "clouds.wgsl", "shadow_transmission.wgsl", "world_lighting.wgsl", "environment.wgsl", "cloud_shadow_read.wgsl", "shadow_projection.wgsl", "pack_shadow_read.wgsl"]
+
+[vertex]
+file = "water_vertex.wgsl"
+files = ["water_options.wgsl"]
+
+[weather]
+file = "weather.wgsl"
+
+[shadow]
+resolution = 2048
+distance = 144.0
+option = "classic_shadow_map"
+
+[reflection]
+option = "native_water_mirror"
+
+[ray_tracing]
+
+[[textures]]
+id = "aces_output"
+file = "aces2.png"
+filter = "linear"
+wrap = "clamp"
+
+[[textures]]
+id = "scattering_atlas"
+file = "scattering.png"
+filter = "linear"
+wrap = "clamp"
+
+[[textures]]
+id = "wave_noise"
+file = "wave-noise.png"
+filter = "linear"
+wrap = "repeat"
+
+[[textures]]
+id = "galaxy_atlas"
+file = "galaxy.png"
+filter = "linear"
+wrap = "clamp"
+
+[[textures]]
+id = "cloud_noise_atlas"
+file = "cloud-noise.png"
+filter = "linear"
+wrap = "clamp"
+
+[[textures]]
+id = "photon_noise"
+file = "photon-noise.png"
+filter = "linear"
+wrap = "repeat"
+
+[[materials]]
+id = 1
+sprites = ["minecraft:block/*_leaves"]
+
+[[materials]]
+id = 2
+sprites = [
+    "minecraft:block/short_grass", "minecraft:block/fern",
+    "minecraft:block/*_sapling", "minecraft:block/wheat_stage*",
+    "minecraft:block/carrots_stage*", "minecraft:block/potatoes_stage*", "minecraft:block/beetroots_stage*",
+    "minecraft:block/dandelion", "minecraft:block/poppy", "minecraft:block/blue_orchid",
+    "minecraft:block/allium", "minecraft:block/azure_bluet", "minecraft:block/*_tulip",
+    "minecraft:block/oxeye_daisy", "minecraft:block/cornflower", "minecraft:block/lily_of_the_valley",
+    "minecraft:block/wither_rose",
+]
+
+[[materials]]
+id = 3
+sprites = [
+    "minecraft:block/tall_grass_top", "minecraft:block/large_fern_top",
+    "minecraft:block/lilac_top", "minecraft:block/rose_bush_top", "minecraft:block/peony_top",
+    "minecraft:block/sunflower_top",
+]
+
+[[materials]]
+id = 4
+sprites = [
+    "minecraft:block/tall_grass_bottom", "minecraft:block/large_fern_bottom",
+    "minecraft:block/lilac_bottom", "minecraft:block/rose_bush_bottom", "minecraft:block/peony_bottom",
+    "minecraft:block/sunflower_bottom",
+]
+
+[[materials]]
+id = 5
+sprites = [
+    "minecraft:block/seagrass", "minecraft:block/kelp", "minecraft:block/kelp_plant",
+    "minecraft:block/*_coral", "minecraft:block/*_coral_fan",
+]
+
+[[materials]]
+id = 6
+sprites = ["minecraft:block/tall_seagrass_top"]
+
+[[materials]]
+id = 7
+sprites = ["minecraft:block/tall_seagrass_bottom"]
+
+[[tags]]
+id = "leaves"
+sprites = ["minecraft:block/*_leaves"]
+
+[[tags]]
+id = "plants"
+sprites = [
+    "minecraft:block/short_grass", "minecraft:block/tall_grass_*", "minecraft:block/fern",
+    "minecraft:block/large_fern_*", "minecraft:block/seagrass", "minecraft:block/tall_seagrass_*",
+    "minecraft:block/kelp*", "minecraft:block/*_sapling", "minecraft:block/wheat_stage*",
+    "minecraft:block/carrots_stage*", "minecraft:block/potatoes_stage*", "minecraft:block/beetroots_stage*",
+    "minecraft:block/dandelion", "minecraft:block/poppy", "minecraft:block/blue_orchid",
+    "minecraft:block/allium", "minecraft:block/azure_bluet", "minecraft:block/*_tulip",
+    "minecraft:block/oxeye_daisy", "minecraft:block/cornflower", "minecraft:block/lily_of_the_valley",
+    "minecraft:block/lilac_*", "minecraft:block/rose_bush_*", "minecraft:block/peony_*",
+    "minecraft:block/sunflower_*", "minecraft:block/wither_rose",
+]
+
+[[tags]]
+id = "metal"
+sprites = [
+    "minecraft:block/iron_block", "minecraft:block/gold_block", "minecraft:block/netherite_block",
+    "minecraft:block/copper_block", "minecraft:block/cut_copper", "minecraft:block/exposed_copper",
+    "minecraft:block/weathered_copper", "minecraft:block/oxidized_copper",
+    "minecraft:block/raw_iron_block", "minecraft:block/raw_gold_block", "minecraft:block/raw_copper_block",
+    "minecraft:block/iron_bars", "minecraft:block/iron_door*", "minecraft:block/iron_trapdoor",
+    "minecraft:block/anvil*", "minecraft:block/cauldron*", "minecraft:block/chain",
+    "minecraft:block/hopper*", "minecraft:block/bell*", "minecraft:block/lodestone*",
+    "minecraft:block/lightning_rod", "minecraft:block/blast_furnace*",
+]
+
+[[tags]]
+id = "ice"
+sprites = ["minecraft:block/ice", "minecraft:block/packed_ice", "minecraft:block/blue_ice"]
+
+[[tags]]
+id = "glass"
+sprites = ["minecraft:block/glass", "minecraft:block/*_stained_glass", "minecraft:block/tinted_glass"]
+
+[[tags]]
+id = "polished_stone"
+sprites = [
+    "minecraft:block/polished_*", "minecraft:block/smooth_stone", "minecraft:block/quartz_block*",
+    "minecraft:block/diamond_block", "minecraft:block/emerald_block", "minecraft:block/lapis_block",
+    "minecraft:block/amethyst_block", "minecraft:block/prismarine_bricks", "minecraft:block/*_glazed_terracotta",
+    "minecraft:block/obsidian", "minecraft:block/crying_obsidian", "minecraft:block/nether_bricks",
+    "minecraft:block/red_nether_bricks", "minecraft:block/blackstone", "minecraft:block/deepslate_bricks",
+    "minecraft:block/deepslate_tiles",
+]
+
+[[tags]]
+id = "masked_emitter"
+sprites = ["minecraft:block/lantern", "minecraft:block/soul_lantern", "minecraft:block/redstone_lamp_on",
+    "minecraft:block/jack_o_lantern"]
+
+[[tags]]
+id = "transparent_solid"
+sprites = ["minecraft:block/slime_block", "minecraft:block/honey_block_*"]
+
+[[tags]]
+id = "grass_ground"
+sprites = ["minecraft:block/grass_block_top", "minecraft:block/grass_block_side_overlay"]
+
+[[tags]]
+id = "grass_blade"
+sprites = ["minecraft:block/short_grass", "minecraft:block/tall_grass_bottom", "minecraft:block/tall_grass_top"]
+
+[[tags]]
+id = "tall_blade_lower"
+sprites = ["minecraft:block/tall_grass_bottom"]
+
+[[tags]]
+id = "tall_blade_upper"
+sprites = ["minecraft:block/tall_grass_top"]
+
+[[tags]]
+id = "conifer_leaves"
+sprites = ["minecraft:block/spruce_leaves", "minecraft:block/dark_oak_leaves"]
+
+[[tags]]
+id = "cherry_leaves"
+sprites = ["minecraft:block/cherry_leaves"]
+
+[[tags]]
+id = "pale_leaves"
+sprites = ["minecraft:block/pale_oak_leaves"]
+
+[[tags]]
+id = "snow_and_ores"
+sprites = [
+    "minecraft:block/snow", "minecraft:block/powder_snow",
+    "minecraft:block/diamond_ore", "minecraft:block/deepslate_diamond_ore",
+    "minecraft:block/emerald_ore", "minecraft:block/deepslate_emerald_ore",
+    "minecraft:block/gold_ore", "minecraft:block/deepslate_gold_ore",
+    "minecraft:block/redstone_ore", "minecraft:block/deepslate_redstone_ore",
+    "minecraft:block/lapis_ore", "minecraft:block/deepslate_lapis_ore",
+    "minecraft:block/nether_quartz_ore", "minecraft:block/redstone_block",
+    "minecraft:block/crying_obsidian", "minecraft:block/amethyst_cluster",
+    "minecraft:block/large_amethyst_bud", "minecraft:block/sculk*",
+    "minecraft:block/magma", "minecraft:block/glow_lichen",
+]
+
+[[resource]]
+name = "sky_lighting"
+format = "rgba16float"
+size = [130, 65]
+keep = "view"
+
+[[resource]]
+name = "cloud_environment_map"
+format = "rgba16float"
+size = [1536, 384]
+keep = "view"
+
+[[resource]]
+name = "cloud_aux"
+format = "rgba16float"
+size = [1536, 480]
+keep = "view"
+
+[[resource]]
+name = "reflection_history"
+format = "rgba16float"
+scale = 0.5
+keep = "view"
+
+[[resource]]
+name = "taa_history"
+format = "rgba16float"
+scale = 1.0
+keep = "view"
+
+[[resource]]
+name = "terrain_heightfield"
+format = "rgba16float"
+size = [512, 512]
+keep = "view"
+
+[[resource]]
+name = "gi_history"
+format = "rgba16float"
+scale = 0.5
+keep = "view"
+
+[[resource]]
+name = "colored_light_volume"
+format = "rgba16float"
+size = [512, 256]
+keep = "view"
+
+[[before_world]]
+file = "atmosphere_compute.wgsl"
+dispatch = [130, 65, 1]
+workgroup = [8, 8, 1]
+reads = ["sky_lighting_previous", "taa_history_previous"]
+writes = ["sky_lighting"]
+
+[[before_world]]
+file = "environment_compute.wgsl"
+files = ["atmosphere_read.wgsl", "clouds.wgsl", "cloud_volume.wgsl", "environment.wgsl", "celestial.wgsl", "shadow_projection.wgsl"]
+dispatch = [1536, 480, 1]
+workgroup = [8, 8, 1]
+reads = ["sky_lighting", "cloud_aux_previous", "cloud_environment_map_previous"]
+writes = ["cloud_environment_map", "cloud_aux"]
+
+[[before_world]]
+file = "skylight_compute.wgsl"
+files = ["atmosphere_read.wgsl", "skylight_mapping.wgsl", "environment.wgsl", "environment_read.wgsl"]
+dispatch = [64, 1, 1]
+workgroup = [64, 1, 1]
+reads = ["sky_lighting", "cloud_environment_map"]
+writes = ["cloud_aux"]
+
+[[post]]
+file = "heightfield_compute.wgsl"
+name = "Decima scrolled world-space terrain heightfield cache"
+compute = true
+dispatch = [512, 512, 1]
+workgroup = [8, 8, 1]
+reads = ["terrain_heightfield_previous", "cloud_aux"]
+writes = ["terrain_heightfield"]
+files = ["environment.wgsl", "heightfield_common.wgsl", "shadow_projection.wgsl", "pack_shadow_read.wgsl"]
+
+[[post]]
+file = "depth_hiz_4.wgsl"
+name = "Hi-Z 2-tier depth pyramid (4x4 and 12x12 max/avg)"
+scale = 0.25
+output = "depth_hiz_4"
+files = ["environment.wgsl", "surface_data.wgsl", "shadow_projection.wgsl"]
+
+[[post]]
+file = "contact_ao.wgsl"
+name = "Half-resolution GTAO and screen-space shadows"
+scale = 0.5
+output = "contact_visibility"
+reads = ["cloud_aux", "terrain_heightfield"]
+files = ["surface_data.wgsl", "environment.wgsl", "skylight_mapping.wgsl", "heightfield_common.wgsl", "shadow_projection.wgsl", "pack_shadow_read.wgsl"]
+
+[[post]]
+file = "ssilvb_gi.wgsl"
+name = "Half-resolution 3-layer hybrid voxel GI (SSILVB + Sky + RSM)"
+scale = 0.5
+output = "indirect_gi_raw"
+reads = ["taa_history_previous", "sky_lighting", "cloud_aux"]
+files = ["surface_data.wgsl", "atmosphere_read.wgsl", "skylight_mapping.wgsl", "environment.wgsl", "shadow_projection.wgsl", "pack_shadow_read.wgsl"]
+
+[[post]]
+file = "gi_denoise_1.wgsl"
+name = "Half-resolution voxel-strict A-Trous GI denoise pass 1"
+scale = 0.5
+output = "indirect_gi_a"
+files = ["surface_data.wgsl", "gi_denoise_common.wgsl"]
+
+[[post]]
+file = "gi_denoise_2.wgsl"
+name = "Half-resolution voxel-strict A-Trous GI denoise pass 2"
+scale = 0.5
+output = "indirect_gi"
+files = ["surface_data.wgsl", "gi_denoise_common.wgsl"]
+
+[[post]]
+file = "gi_temporal_compute.wgsl"
+name = "Half-resolution temporal GI and distant shadow accumulation"
+compute = true
+dispatch = "pixels"
+workgroup = [8, 8, 1]
+reads = ["gi_history_previous"]
+writes = ["gi_history"]
+
+[[post]]
+file = "lpv_compute.wgsl"
+name = "3D scrolled colored light propagation volume (64x32x64)"
+compute = true
+dispatch = [512, 256, 1]
+workgroup = [8, 8, 1]
+reads = ["colored_light_volume_previous", "taa_history_previous"]
+writes = ["colored_light_volume"]
+files = ["surface_data.wgsl", "lpv_common.wgsl"]
+
+[[post]]
+file = "fog_compute.wgsl"
+name = "Half-resolution reflection TAA"
+compute = true
+dispatch = "pixels"
+workgroup = [8, 8, 1]
+reads = ["sky_lighting", "cloud_aux", "cloud_environment_map", "reflection_history_previous", "taa_history_previous", "terrain_heightfield_previous"]
+writes = ["reflection_history"]
+files = ["atmosphere_read.wgsl", "heightfield_common.wgsl", "shadow_transmission.wgsl", "clouds.wgsl", "cloud_volume.wgsl", "air_fog_common.wgsl", "air_fog.wgsl", "underwater_fog.wgsl", "environment.wgsl", "environment_read.wgsl", "cloud_shadow_read.wgsl", "rainbow.wgsl", "surface_data.wgsl", "reflection_options.wgsl", "reflection_history_read.wgsl", "rt_reflection_common.wgsl", "reflection_history_write.wgsl", "shadow_projection.wgsl", "pack_shadow_read.wgsl"]
+
+[[post]]
+file = "fog_scattering.wgsl"
+name = "Half-resolution volumetric fog and terrain clouds"
+scale = 0.5
+output = "fog_scattering"
+reads = ["sky_lighting", "cloud_aux", "cloud_environment_map", "colored_light_volume_previous"]
+files = ["atmosphere_read.wgsl", "lpv_common.wgsl", "shadow_transmission.wgsl", "clouds.wgsl", "cloud_volume.wgsl", "air_fog_common.wgsl", "air_fog.wgsl", "underwater_fog.wgsl", "environment.wgsl", "environment_read.wgsl", "cloud_shadow_read.wgsl", "rainbow.wgsl", "shadow_projection.wgsl", "pack_shadow_read.wgsl"]
+
+[[post]]
+file = "fog_transmittance.wgsl"
+name = "Half-resolution analytic fog transmittance"
+scale = 0.5
+output = "fog_transmittance"
+reads = ["sky_lighting", "cloud_aux"]
+files = ["atmosphere_read.wgsl", "shadow_transmission.wgsl", "clouds.wgsl", "cloud_volume.wgsl", "air_fog_common.wgsl", "air_fog.wgsl", "underwater_fog.wgsl", "environment.wgsl", "cloud_shadow_read.wgsl", "rainbow.wgsl", "shadow_projection.wgsl", "pack_shadow_read.wgsl"]
+
+[[post]]
+file = "composite.wgsl"
+name = "Terrain effects and depth-aware volume resolve"
+output = "taa_current"
+reads = ["sky_lighting", "cloud_aux", "cloud_environment_map", "reflection_history", "gi_history"]
+files = ["atmosphere_read.wgsl", "shadow_transmission.wgsl", "clouds.wgsl", "cloud_volume.wgsl", "air_fog_common.wgsl", "air_fog.wgsl", "underwater_fog.wgsl", "environment.wgsl", "cloud_shadow_read.wgsl", "rainbow.wgsl", "celestial.wgsl", "surface_data.wgsl", "skylight_mapping.wgsl", "environment_read.wgsl", "reflection_options.wgsl", "terrain_effects.wgsl", "shadow_projection.wgsl", "pack_shadow_read.wgsl"]
+
+[[post]]
+file = "bloom.wgsl"
+name = "Bloom highlights"
+output = "bloom_near"
+scale = 0.25
+
+[[post]]
+file = "bloom_wide.wgsl"
+name = "Wide bloom"
+output = "bloom_wide"
+scale = 0.25
+
+[[post]]
+file = "bloom_far.wgsl"
+name = "Far atmospheric bloom halo"
+output = "bloom_far"
+scale = 0.25
+
+[[post]]
+file = "taa_compute.wgsl"
+name = "Temporal and spatial anti-aliasing"
+compute = true
+dispatch = "pixels"
+workgroup = [8, 8, 1]
+reads = ["taa_history_previous"]
+writes = ["taa_history"]
+files = ["antialias.wgsl"]
+
+[[post]]
+file = "bloom_combine.wgsl"
+name = "Temporal resolve, CAS sharpening, auto-exposure, and bloomy fog composite"
+reads = ["taa_history", "sky_lighting"]
+
+[tonemap]
+file = "tonemap.wgsl"
+
+[[options]]
+id = "shadows"
+name = "Shadows"
+type = "bool"
+default = true
+
+[[options]]
+id = "classic_shadow_map"
+name = "Classic shadow map"
+type = "bool"
+default = true
+
+[[options]]
+id = "cloud_cover"
+name = "Cloud cover"
+type = "float"
+min = 0.0
+max = 1.0
+step = 0.05
+default = 0.55
+
+[[options]]
+id = "directional_skylight"
+name = "Directional skylight"
+type = "bool"
+default = true
+
+[[options]]
+id = "wave_strength"
+name = "Wave strength"
+type = "float"
+min = 0.0
+max = 1.0
+step = 0.05
+default = 0.5
+
+[[options]]
+id = "water_reflections"
+name = "Water reflections"
+type = "bool"
+default = true
+
+[[options]]
+id = "native_water_mirror"
+name = "Native terrain mirror on water"
+type = "bool"
+default = false
+
+[[options]]
+id = "water_caustics"
+name = "Water caustics"
+type = "bool"
+default = true
+
+[[options]]
+id = "fog_strength"
+name = "Fog density"
+type = "float"
+min = 0.0
+max = 2.0
+step = 0.05
+default = 0.85
+
+[[options]]
+id = "bloom_strength"
+name = "Bloom intensity"
+type = "float"
+min = 0.0
+max = 0.5
+step = 0.02
+default = 0.14
+
+[[options]]
+id = "color_saturation"
+name = "Color saturation"
+type = "float"
+min = 0.5
+max = 1.75
+step = 0.05
+default = 1.0
+
+[[options]]
+id = "color_grading"
+name = "Color grading"
+type = "choice"
+values = ["Photon", "RDR2 Filmic"]
+default = "RDR2 Filmic"
+
+[[options]]
+id = "exposure"
+name = "Exposure"
+type = "float"
+min = 0.5
+max = 2.0
+step = 0.05
+default = 1.0
+
+[[options]]
+id = "auto_exposure"
+name = "Auto-exposure (eye adaptation)"
+type = "bool"
+default = false
+
+[[options]]
+id = "colored_shafts"
+name = "Colored light shafts"
+type = "bool"
+default = false
+
+[[options]]
+id = "temporal_aa"
+name = "Temporal anti-aliasing"
+type = "bool"
+default = true
+
+[[options]]
+id = "spatial_aa"
+name = "Spatial anti-aliasing"
+type = "bool"
+default = true
+
+[[options]]
+id = "volumetric_clouds"
+name = "Volumetric clouds"
+type = "bool"
+default = true
+
+[[options]]
+id = "underwater_fog"
+name = "Underwater fog"
+type = "bool"
+default = true
+
+[[options]]
+id = "tree_scattering"
+name = "Leaf translucency"
+type = "float"
+min = 0.0
+max = 2.0
+step = 0.05
+default = 1.25
+
+[[options]]
+id = "contact_ao"
+name = "Ambient occlusion strength (GTAO)"
+type = "float"
+min = 0.0
+max = 1.0
+step = 0.05
+default = 0.65
+
+[[options]]
+id = "soft_shadows"
+name = "Variable shadow softness"
+type = "bool"
+default = false
+
+[[options]]
+id = "cached_distant_shadows"
+name = "Cached distant terrain shadows"
+type = "bool"
+default = true
+
+[[options]]
+id = "wet_surfaces"
+name = "Wet surfaces and puddles"
+type = "bool"
+default = true
+
+[[options]]
+id = "terrain_reflections"
+name = "Terrain reflections"
+type = "bool"
+default = true
+
+[[options]]
+id = "screen_space_reflections"
+name = "Screen-space terrain reflections"
+type = "bool"
+default = true
+
+[[options]]
+id = "entity_lighting"
+name = "Entity lighting"
+type = "bool"
+default = true
+
+[[options]]
+id = "rain_opacity"
+name = "Rain opacity"
+type = "float"
+min = 0.0
+max = 1.0
+step = 0.05
+default = 0.25
+
+[[options]]
+id = "snow_opacity"
+name = "Snow opacity"
+type = "float"
+min = 0.0
+max = 1.0
+step = 0.05
+default = 0.75
+
+[[options]]
+id = "galaxy_enabled"
+name = "Galaxy"
+type = "bool"
+default = false
+
+[[options]]
+id = "end_sun"
+name = "End sun and flares"
+type = "bool"
+default = false
+
+[[options]]
+id = "aurora_mode"
+name = "Aurora"
+type = "choice"
+values = ["Off", "Rare in cold biomes", "Every clear night"]
+default = "Rare in cold biomes"
+
+[[options]]
+id = "rainbows"
+name = "Rainbows"
+type = "bool"
+default = true
+
+[[options]]
+id = "blocky_clouds"
+name = "Blocky clouds"
+type = "bool"
+default = false
+
+[[options]]
+id = "second_blocky_layer"
+name = "Second blocky cloud layer"
+type = "bool"
+default = false
+
+[[options]]
+id = "cloud_history"
+name = "Temporal cloud reconstruction"
+type = "bool"
+default = true
+
+[[options]]
+id = "rough_reflections"
+name = "Rough terrain reflections"
+type = "bool"
+default = true
+
+[[options]]
+id = "temporal_reflections"
+name = "Temporal reflections"
+type = "bool"
+default = true
+
+[[options]]
+id = "water_displacement"
+name = "Water vertex waves"
+type = "bool"
+default = false
+
+[[options]]
+id = "water_parallax"
+name = "Water wave parallax"
+type = "bool"
+default = true
+
+[[options]]
+id = "water_texture_mode"
+name = "Water texture"
+type = "choice"
+values = ["Clear", "Underground highlights", "Highlights", "Vanilla texture"]
+default = "Underground highlights"
+
+[[options]]
+id = "biome_water_tint"
+name = "Biome water tint"
+type = "bool"
+default = true
+
+[[options]]
+id = "snells_window"
+name = "Snell’s window"
+type = "bool"
+default = true
+
+[[options]]
+id = "underwater_marine_snow"
+name = "Underwater marine snow"
+type = "bool"
+default = true
+
+[[options]]
+id = "underwater_distortion"
+name = "Underwater lens optics"
+type = "float"
+min = 0.0
+max = 1.0
+step = 0.05
+default = 0.5
+
+[[options]]
+id = "translucent_refraction"
+name = "Glass and ice refraction"
+type = "bool"
+default = true
+
+[[options]]
+id = "neural_clouds"
+name = "Neural cloud scattering"
+type = "bool"
+default = true
+
+[[options]]
+id = "neural_sss"
+name = "Neural canopy and snow SSS"
+type = "bool"
+default = true
+
+[[options]]
+id = "neural_gi"
+name = "Neural multi-bounce AO"
+type = "bool"
+default = true
+
+[[options]]
+id = "ssilvb_gi"
+name = "Screen-space bitmask GI (SSILVB)"
+type = "bool"
+default = true
+
+[[options]]
+id = "gi_rsm_bounce"
+name = "Off-screen sunlight bounce (RSM)"
+type = "bool"
+default = true
+
+[[options]]
+id = "neural_water"
+name = "Neural underwater optics"
+type = "bool"
+default = true
+
+[[options]]
+id = "neural_atmosphere"
+name = "Neural spectral atmosphere"
+type = "bool"
+default = true
+
+[[options]]
+id = "heat_distortion"
+name = "Atmospheric heat distortion"
+type = "float"
+min = 0.0
+max = 1.0
+step = 0.05
+default = 0.65
+
+[[options]]
+id = "bump_strength"
+name = "Auto bump mapping"
+type = "float"
+min = 0.0
+max = 1.0
+step = 0.05
+default = 0.50
+
+[[options]]
+id = "colored_lpv"
+name = "3D colored blocklight (LPV)"
+type = "bool"
+default = true
+
+[[options]]
+id = "labpbr_pom"
+name = "LabPBR parallax occlusion (POM)"
+type = "bool"
+default = true
+
+[[options]]
+id = "sun_lens_halo"
+name = "Physical sun lens halo"
+type = "float"
+min = 0.0
+max = 1.0
+step = 0.05
+default = 0.45
+
+[[options]]
+id = "rt_reflections"
+name = "Hardware ray-traced reflections"
+type = "bool"
+default = true
+
+[[pages]]
+id = "settings"
+name = "Shader settings"
+items = ["page:display", "page:lighting", "page:water", "page:materials", "page:clouds", "page:sky_weather"]
+
+[[pages]]
+id = "display"
+name = "Image settings"
+items = ["color_grading", "exposure", "auto_exposure", "color_saturation", "bloom_strength", "sun_lens_halo", "spatial_aa", "temporal_aa"]
+
+[[pages]]
+id = "lighting"
+name = "Lighting and shadows"
+items = ["shadows", "classic_shadow_map", "soft_shadows", "cached_distant_shadows", "colored_lpv", "contact_ao", "neural_gi", "ssilvb_gi", "gi_rsm_bounce", "directional_skylight", "entity_lighting", "tree_scattering", "neural_sss"]
+
+[[pages]]
+id = "water"
+name = "Water"
+items = ["water_reflections", "native_water_mirror", "water_caustics", "wave_strength", "water_displacement", "water_parallax", "water_texture_mode", "biome_water_tint", "underwater_fog", "neural_water", "snells_window", "underwater_marine_snow", "underwater_distortion"]
+
+[[pages]]
+id = "materials"
+name = "Materials and reflections"
+items = ["bump_strength", "labpbr_pom", "wet_surfaces", "terrain_reflections", "rt_reflections", "screen_space_reflections", "rough_reflections", "temporal_reflections", "translucent_refraction"]
+
+[[pages]]
+id = "clouds"
+name = "Clouds and fog"
+items = ["volumetric_clouds", "neural_clouds", "cloud_cover", "cloud_history", "blocky_clouds", "second_blocky_layer", "fog_strength", "colored_shafts"]
+
+[[pages]]
+id = "sky_weather"
+name = "Sky and weather"
+items = ["neural_atmosphere", "heat_distortion", "rain_opacity", "snow_opacity", "rainbows", "aurora_mode", "galaxy_enabled", "end_sun"]
+
+[[lights]]
+color = [1.0, 0.58, 0.24]
+blocks = ["torch", "wall_torch", "lantern", "campfire", "glowstone", "shroomlight", "jack_o_lantern", "ochre_froglight", "copper_bulb"]
+
+[[lights]]
+color = [1.0, 0.34, 0.08]
+blocks = ["lava", "magma_block", "fire"]
+
+[[lights]]
+color = [0.22, 0.78, 1.0]
+blocks = ["soul_torch", "soul_wall_torch", "soul_lantern", "soul_campfire", "soul_fire", "sea_lantern", "conduit"]
+
+[[lights]]
+color = [1.0, 0.20, 0.12]
+blocks = ["redstone_torch", "redstone_wall_torch", "redstone_lamp", "redstone_ore", "deepslate_redstone_ore"]
+
+[[lights]]
+color = [0.76, 0.34, 1.0]
+blocks = ["amethyst_cluster", "crying_obsidian", "respawn_anchor", "nether_portal", "pearlescent_froglight"]
+
+[[lights]]
+color = [0.38, 1.0, 0.54]
+blocks = ["verdant_froglight", "sea_pickle", "glow_lichen"]
+
+[[lights]]
+color = [0.96, 0.98, 1.0]
+blocks = ["beacon", "end_rod"]
