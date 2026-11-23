@@ -2,12 +2,12 @@
 
 Proton is a native WGSL shader pack for **Horizon** (Shader API `0.2`), based on **Photon** by SixthSurge and expanded with custom lighting, distant shadows, and post-processing.
 
-![Proton Showcase 1](screenshot1.png)
+![Proton Showcase 1](screenshots/screenshot1.png)
 
-| ![Water & Reflections](screenshot2.png) | ![Foliage & Canopy Lighting](screenshot3.png) |
+| ![Water & Reflections](screenshots/screenshot2.png) | ![Foliage & Canopy Lighting](screenshots/screenshot3.png) |
 | --- | --- |
 
-![River Valley](screenshot4.png)
+![River Valley](screenshots/screenshot4.png)
 
 ## Highlights
 - **Volumetric Clouds & Atmosphere** — 3D clouds with live terrain shadows, god rays, biome mist, rainbows, auroras, heat shimmer, and a starry night sky.
