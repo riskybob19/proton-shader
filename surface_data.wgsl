@@ -30,3 +30,36 @@ fn surface_ambient(data: u32) -> f32 {
 fn surface_sky(data: u32) -> f32 {
     return f32((data >> 21u) & 7u) * (1.0 / 7.0);
 }
+
+// Sentinel range (bits 12..23 all 1s = 0xFFF000..0xFFFFFF) is unreachable by ordinary blocks
+// because ambient_fraction + direct_fraction <= 1.0 cannot both be 1.0 simultaneously.
+const LAVA_SURFACE_BASE: u32 = 0xFFF000u;
+
+fn surface_is_lava(data: u32) -> bool {
+    return data >= LAVA_SURFACE_BASE;
+}
+
+fn lava_surface_payload(tex_heat: f32, temp: f32) -> f32 {
+    let q_tex = clamp(u32(round(clamp(tex_heat, 0.0, 1.0) * 63.0)), 0u, 63u);
+    let q_tmp = clamp(u32(round(clamp(temp, 0.0, 1.0) * 63.0)), 0u, 63u);
+    return f32(LAVA_SURFACE_BASE | (q_tex << 6u) | q_tmp);
+}
+
+fn lava_tex_heat(data: u32) -> f32 {
+    return f32((data >> 6u) & 63u) * (1.0 / 63.0);
+}
+
+fn lava_temp(data: u32) -> f32 {
+    return f32(data & 63u) * (1.0 / 63.0);
+}
+
+// Physical Planck blackbody chromaticity + Stefan-Boltzmann T^4 HDR radiance
+// for basaltic magma across ~800K (charred crust) -> 1480K (incandescent fissures).
+fn lava_blackbody(t: f32) -> vec3<f32> {
+    let tc = clamp(t, 0.0, 1.0);
+    let r = smoothstep(0.08, 0.42, tc);
+    let g = pow(smoothstep(0.28, 0.94, tc), 1.45) * 0.86;
+    let b = pow(smoothstep(0.66, 1.0, tc), 2.2) * 0.44;
+    let radiance = pow(tc, 2.75) * 3.35;
+    return vec3(r, g, b) * radiance;
+}

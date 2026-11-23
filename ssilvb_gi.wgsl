@@ -284,7 +284,7 @@ fn post(input: PostInput) -> vec4<f32> {
     let cell = clamp(vec2<i32>(input.uv * size_f), vec2(0), size_i - 1);
     let surface = surface_at(cell);
     let depth = textureLoad(scene_depth, cell, 0);
-    if !surface.present || depth <= 0.0 {
+    if !surface.present || surface_is_lava(u32(surface.data)) || depth <= 0.0 {
         return vec4(0.0);
     }
 

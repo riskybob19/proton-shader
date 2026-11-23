@@ -142,8 +142,121 @@ fn sample_ssilvb_gi(uv: vec2<f32>, distance: f32, normal: vec3<f32>) -> vec3<f32
     return gi_sum / w_sum;
 }
 
+// Physical thermal boundary-layer chilling where molten lava contacts solid blocks:
+// Probes 12 points in the 3D lava tangent plane against scene_depth & surface_data to detect
+// shores, islands, pillars, cave walls, and lavafall contacts (rejecting foreground/overhead
+// occluders via 3D planar/height bounds), then cools down the Planck blackbody curve.
+fn lava_boundary_cooling(uv: vec2<f32>, center: vec3<f32>, distance: f32, normal: vec3<f32>,
+    packed: u32, base_color: vec3<f32>) -> vec3<f32> {
+    if distance > 105.0 {
+        return base_color;
+    }
+    let N = normalize(normal);
+    let tangent = normalize(select(vec3(1.0, 0.0, 0.0), cross(vec3(0.0, 1.0, 0.0), N), abs(N.y) < 0.92));
+    let bitangent = cross(N, tangent);
+    let world_to_clip = frame.projection * frame.view;
+    let depth_size = vec2<i32>(textureDimensions(scene_depth));
+    let depth_f = vec2<f32>(depth_size);
+
+    const PROBES = array<vec2<f32>, 12>(
+        vec2( 0.20,  0.00), vec2(-0.20,  0.00), vec2( 0.00,  0.20), vec2( 0.00, -0.20),
+        vec2( 0.54,  0.00), vec2(-0.54,  0.00), vec2( 0.00,  0.54), vec2( 0.00, -0.54),
+        vec2( 0.51,  0.51), vec2(-0.51,  0.51), vec2( 0.51, -0.51), vec2(-0.51, -0.51),
+    );
+
+    var min_d = 1e4;
+    var hits = 0u;
+    for (var i = 0u; i < 12u; i += 1u) {
+        let off = PROBES[i];
+        let probe_3d = center + tangent * off.x + bitangent * off.y + N * 0.04;
+        let clip = world_to_clip * vec4(probe_3d, 1.0);
+        if clip.w <= 0.05 {
+            continue;
+        }
+        let p_uv = 0.5 + (clip.xy / clip.w) * vec2(0.5, -0.5);
+        if any(p_uv <= vec2(0.001)) || any(p_uv >= vec2(0.999)) {
+            continue;
+        }
+        let tap_texel = clamp(vec2<i32>(p_uv * depth_f), vec2(0), depth_size - 1);
+        let tap_depth = textureLoad(scene_depth, tap_texel, 0);
+        if tap_depth <= 0.0 {
+            continue;
+        }
+        let tap_surf = surface_at(tap_texel);
+        if tap_surf.present && surface_is_lava(u32(tap_surf.data)) {
+            continue;
+        }
+        let tap_uv = (vec2<f32>(tap_texel) + 0.5) / depth_f;
+        let tap_pos = view_position(tap_uv, tap_depth);
+        let diff = tap_pos - center;
+        let h_d = dot(diff, N);
+        let p_d = length(diff - N * h_d);
+        if h_d >= -0.22 && h_d <= 1.65 && p_d < 1.05 && (h_d <= 0.42 || p_d <= 0.72) {
+            min_d = min(min_d, p_d);
+            hits += 1u;
+        }
+    }
+    if hits == 0u || min_d >= 1.05 {
+        return base_color;
+    }
+
+    let tex_heat = lava_tex_heat(packed);
+    let hot_temp = max(lava_temp(packed), 0.42);
+    let world_p = center + frame.camera_position;
+    // Quantize boundary crust breakup to Minecraft's 16x16 texel grid for crisp pixel-art edges.
+    let px = floor(world_p * 16.0);
+    let cell2 = vec2(dot(px, tangent), dot(px, bitangent));
+    let wrap = cell2 - floor(cell2 * (1.0 / 256.0)) * 256.0;
+    let tex_jit = fract(sin(dot(wrap, vec2(127.1, 311.7))) * 43758.5453);
+
+    let enclosure = f32(hits) * (1.0 / 12.0);
+    let d_reach = mix(0.84, 0.50, tex_heat) + (tex_jit - 0.5) * 0.24 + enclosure * 0.22;
+    let prox = 1.0 - smoothstep(0.04, max(d_reach, 0.16), min_d);
+    let chill = clamp(prox * (0.78 + 0.34 * enclosure), 0.0, 1.0)
+        * (1.0 - smoothstep(56.0, 105.0, distance));
+    if chill <= 0.002 {
+        return base_color;
+    }
+
+    let cool_floor = mix(0.10, 0.27, tex_heat);
+    let cool_temp = mix(hot_temp, cool_floor, chill);
+    let hot_rad = lava_blackbody(hot_temp);
+    let cool_rad = lava_blackbody(cool_temp);
+    let hot_l = max(dot(hot_rad, frame.luminance), 1e-4);
+    let cool_l = dot(cool_rad, frame.luminance);
+    let scale = clamp(cool_l / hot_l, 0.0, 1.0);
+    let cool_norm = cool_rad / max(cool_l, 1e-4);
+
+    var trans = 1.0;
+    var fog_part = vec3(0.0);
+    if frame.dimension == -1 && frame.eye_in == 0u && frame.blindness <= 0.0 && frame.darkness <= 0.0 {
+        let lava_prox = 1.0 - smoothstep(28.0, 68.0, world_p.y);
+        let haze = (1.0 - exp(-distance * (0.0036 * (1.0 + 0.25 * lava_prox)))) * 0.78;
+        let base_tint = pow(max(frame.fog_color, vec3(0.06, 0.02, 0.01)), vec3(2.2)) * 0.92;
+        let fog_tint = base_tint + vec3(0.14, 0.038, 0.009) * (0.25 + 0.85 * lava_prox);
+        trans = 1.0 - haze;
+        fog_part = fog_tint * haze;
+    } else if frame.dimension == 1 && frame.eye_in == 0u && frame.blindness <= 0.0 && frame.darkness <= 0.0 {
+        let haze = (1.0 - exp(-distance * 0.0014)) * 0.58;
+        let dir_y = abs(center.y / max(distance, 1e-4));
+        let base_end = mix(vec3(0.012, 0.008, 0.026), vec3(0.024, 0.013, 0.046),
+            1.0 - smoothstep(0.0, 0.55, dir_y));
+        trans = 1.0 - haze;
+        fog_part = base_end * haze;
+    }
+
+    let unfogged = max(base_color - fog_part, vec3(0.0));
+    let dimmed = unfogged * mix(1.0, scale, chill);
+    let shifted = mix(dimmed, cool_norm * dot(dimmed, frame.luminance), chill * 0.88);
+    let crust_w = 1.0 - smoothstep(0.14, 0.54, cool_temp);
+    let basalt_env = select(vec3(0.18, 0.08, 0.04), vec3(0.22, 0.07, 0.025), frame.dimension == -1);
+    let basalt_crust = (vec3(0.020, 0.012, 0.011) * (0.72 + 0.55 * tex_heat) * basalt_env)
+        + vec3(0.12, 0.012, 0.001) * (crust_w * smoothstep(0.08, 0.34, cool_temp));
+    return shifted + basalt_crust * (chill * trans) + fog_part;
+}
+
 fn terrain_effects(input: PostInput, position: vec3<f32>, distance: f32) -> vec4<f32> {
-    if frame.dimension != 0 || input.depth <= 0.0 || (contact_ao <= 0.0 && !terrain_reflections && !shadows) {
+    if input.depth <= 0.0 {
         return input.color;
     }
     let texel = vec2<i32>(input.uv * vec2<f32>(textureDimensions(scene_depth)));
@@ -153,6 +266,12 @@ fn terrain_effects(input: PostInput, position: vec3<f32>, distance: f32) -> vec4
     }
 
     let packed = u32(surface.data);
+    if surface_is_lava(packed) {
+        return vec4(lava_boundary_cooling(input.uv, position, distance, surface.normal, packed, input.color.rgb), input.color.a);
+    }
+    if frame.dimension != 0 || (contact_ao <= 0.0 && !terrain_reflections && !shadows) {
+        return input.color;
+    }
     var color = input.color.rgb;
     let ambient = surface_ambient(packed);
     let fog = vanilla_fog(position);

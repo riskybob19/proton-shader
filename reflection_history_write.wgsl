@@ -112,7 +112,7 @@ fn save_reflection_history(cell: vec2<i32>, uv: vec2<f32>, depth: f32, position:
     let scene_size = vec2<f32>(textureDimensions(scene_depth));
     let texel = clamp(vec2<i32>(uv * scene_size), vec2(0), vec2<i32>(scene_size) - 1);
     let surface = surface_at(texel);
-    if !surface.present {
+    if !surface.present || surface_is_lava(u32(surface.data)) {
         textureStore(reflection_history, cell, vec4(0.0));
         return;
     }

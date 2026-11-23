@@ -1,7 +1,7 @@
 schema = 1
 id = "photon_prototype"
 name = "Proton"
-version = "1.2.8"
+version = "1.2.18"
 api = "0.2"
 description = "Proton — a high-performance native Horizon shader with temporal hybrid GI, 3D colored LPV, Decima-inspired distant shadows, volumetric clouds & god rays, neural foliage/water optics, and RDR2 filmic grading."
 authors = ["Based on Photon by SixthSurge"]
@@ -871,31 +871,3 @@ items = ["volumetric_clouds", "neural_clouds", "cloud_cover", "cloud_history", "
 id = "sky_weather"
 name = "Sky and weather"
 items = ["neural_atmosphere", "heat_distortion", "rain_opacity", "snow_opacity", "rainbows", "aurora_mode", "galaxy_enabled", "end_sun"]
-
-[[lights]]
-color = [1.0, 0.58, 0.24]
-blocks = ["torch", "wall_torch", "lantern", "campfire", "glowstone", "shroomlight", "jack_o_lantern", "ochre_froglight", "copper_bulb"]
-
-[[lights]]
-color = [1.0, 0.34, 0.08]
-blocks = ["lava", "magma_block", "fire"]
-
-[[lights]]
-color = [0.22, 0.78, 1.0]
-blocks = ["soul_torch", "soul_wall_torch", "soul_lantern", "soul_campfire", "soul_fire", "sea_lantern", "conduit"]
-
-[[lights]]
-color = [1.0, 0.20, 0.12]
-blocks = ["redstone_torch", "redstone_wall_torch", "redstone_lamp", "redstone_ore", "deepslate_redstone_ore"]
-
-[[lights]]
-color = [0.76, 0.34, 1.0]
-blocks = ["amethyst_cluster", "crying_obsidian", "respawn_anchor", "nether_portal", "pearlescent_froglight"]
-
-[[lights]]
-color = [0.38, 1.0, 0.54]
-blocks = ["verdant_froglight", "sea_pickle", "glow_lichen"]
-
-[[lights]]
-color = [0.96, 0.98, 1.0]
-blocks = ["beacon", "end_rod"]

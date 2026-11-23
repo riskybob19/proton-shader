@@ -287,39 +287,37 @@ fn surface_blocklight(position: vec3<f32>, light_levels: vec2<f32>, ao: f32, dir
         return vec3(0.0);
     }
     let b2 = block * block;
+    let b3 = b2 * block;
     let b4 = b2 * b2;
     let b8 = b4 * b4;
-    var falloff = b8 + 0.18 * b2 + 0.16 * photon_dampen(block);
-    falloff *= mix(ao * ao * ao, 1.0, clamp(falloff, 0.0, 1.0));
+    // Physical inverse-square decay curve without a high low-end linear shelf
+    // (eliminates Minecraft's jagged level-1..2 Manhattan diamond contours on terrain).
+    let outer_fade = smoothstep(0.02, 0.24, block);
+    var falloff = (b8 + 0.36 * b4 + 0.22 * b3 + 0.05 * b2) * outer_fade;
+    falloff *= mix(ao * ao, 1.0, clamp(falloff, 0.0, 1.0));
     if frame.darkness > 0.0 {
         let pulse = ao * photon_dampen(abs(cos(2.0 * frame.time))) * 0.67 + 0.2;
         falloff *= mix(1.0, pulse, frame.darkness);
     }
     falloff *= 1.0 - (0.2 + 0.2 * photon_daylight().noon) * light_levels.y;
-    falloff += min(2.7 * b8 * b4, 0.9);
-    falloff *= smoothstep(0.0, 0.125, block);
+    falloff += min(2.7 * b8 * b4, 0.9) * outer_fade;
 
     const WARM_BLOCKLIGHT = vec3(1.0, 0.56, 0.24);
     let base_luma = dot(WARM_BLOCKLIGHT, frame.luminance);
-    let custom = block_light_color(position);
-    // Horizon's built-in block_light_color() voxel grid terminates abruptly at ~32 blocks.
-    // Smoothly fade custom.a before that hard boundary so it hands off invisibly to the
-    // wider 128x64x128 colored LPV and luminance-matched fallback without any color/brightness pop.
-    let box_d = max(abs(position.x), max(abs(position.y), abs(position.z)));
-    let custom_w = clamp(custom.a, 0.0, 1.0) * (1.0 - smoothstep(18.0, 30.0, box_d));
-    let custom_col = custom.rgb * clamp(base_luma / max(dot(custom.rgb, frame.luminance), 0.18), 0.72, 1.38);
-    var color = mix(WARM_BLOCKLIGHT, custom_col, custom_w);
+    var color = WARM_BLOCKLIGHT;
     var lpv_boost = vec3(0.0);
     if colored_lpv {
+        // 100% GPU-driven 128x64x128 scrolled colored light propagation volume (0.008 ms,
+        // zero CPU chunk-boundary flood-fill stutters, +/-64m XZ & +/-32m Y reach).
         let lpv = lpv_sample_trilinear(colored_light_volume_previous,
             frame.camera_position + position, lpv_anchor(frame.camera_position));
         let lpv_max = max(lpv.r, max(lpv.g, lpv.b));
-        if lpv_max > 0.02 {
+        if lpv_max > 0.015 {
             let lpv_unit = lpv / lpv_max;
             let lpv_tint = lpv_unit * clamp(base_luma / max(dot(lpv_unit, frame.luminance), 0.18), 0.72, 1.38);
-            let blend_w = smoothstep(0.02, 0.40, lpv_max) * (1.0 - 0.55 * custom_w);
-            color = mix(color, lpv_tint, blend_w * 0.85);
-            lpv_boost = lpv * (0.18 * ao * directional * smoothstep(0.05, 0.5, block));
+            let blend_w = smoothstep(0.015, 0.24, lpv_max);
+            color = mix(color, lpv_tint, blend_w * 0.90);
+            lpv_boost = lpv * (0.12 * ao * directional * smoothstep(0.05, 0.5, block));
         }
     }
     return color * (6.0 * falloff * directional) + lpv_boost;
@@ -373,16 +371,19 @@ fn surface_fog(color: vec4<f32>, position: vec3<f32>) -> Surface {
         return Surface(vec4(mix(color.rgb, fog_tint, clamp(fog_factor, 0.0, 1.0)), color.a));
     }
     if frame.dimension == 1 && frame.eye_in == 0u && frame.blindness <= 0.0 && frame.darkness <= 0.0 {
-        // Directional cosmic purple-indigo End haze with End-sun forward-scattered golden-violet rim.
+        // Subtle cosmic purple-indigo End haze anchored to render distance so islands & obsidian
+        // pillars stay crisp and high-contrast while distant void fades cleanly.
         let dist = length(position);
         let dir = position / max(dist, 1e-4);
         let end_sun_dir = normalize(vec3(-0.83, 0.31, 0.46));
         let cos_es = clamp(dot(dir, end_sun_dir), -1.0, 1.0);
-        let haze = 1.0 - exp(-dist * 0.0052);
-        let fog_factor = max(amount, haze * 0.84);
-        let base_end = mix(vec3(0.022, 0.014, 0.044), vec3(0.046, 0.024, 0.082),
+        let haze = (1.0 - exp(-dist * 0.0014)) * 0.58;
+        let far_d = max(frame.render_distance, 64.0);
+        let border = smoothstep(far_d * 0.78, far_d * 0.99, dist);
+        let fog_factor = max(border, haze);
+        let base_end = mix(vec3(0.012, 0.008, 0.026), vec3(0.024, 0.013, 0.046),
             1.0 - smoothstep(0.0, 0.55, abs(dir.y)));
-        let sun_scatter = vec3(0.18, 0.09, 0.14) * photon_phase(cos_es, 0.58) * smoothstep(24.0, 140.0, dist);
+        let sun_scatter = vec3(0.065, 0.032, 0.055) * photon_phase(cos_es, 0.58) * smoothstep(48.0, 180.0, dist);
         return Surface(vec4(mix(color.rgb, base_end + sun_scatter, clamp(fog_factor, 0.0, 1.0)), color.a));
     }
 

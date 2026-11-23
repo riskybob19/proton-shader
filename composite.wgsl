@@ -65,8 +65,12 @@ fn post(input: PostInput) -> vec4<f32> {
     // hardware bilinear fog fast-path against silhouette depth cancellation.
     let depth_grad = abs(dpdx(input.depth)) + abs(dpdy(input.depth));
     // Horizon draws the End backdrop separately from its ordinary sky stage (dimension 1 = End).
+    // Use direction-only unprojection (z=0.0005, w=0) so view-bobbing eye translation never swings the sky.
     if frame.dimension == 1 && input.depth <= 0.0 {
-        let direction = normalize(view_position(input.uv, 1.0));
+        let ndc = vec2(input.uv.x * 2.0 - 1.0, 1.0 - input.uv.y * 2.0);
+        let clip_far = frame.projection_inverse * vec4(ndc, 0.0005, 1.0);
+        let view_dir = clip_far.xyz / max(abs(clip_far.w), 1e-6);
+        let direction = normalize((frame.view_inverse * vec4(view_dir, 0.0)).xyz);
         return vec4(end_sky(direction, input.color.rgb), 1.0);
     }
     if input.depth <= 0.0 && !use_underwater_fog() {

@@ -478,12 +478,13 @@ fn directional_lightmap_mul(pos_dx: vec3<f32>, pos_dy: vec3<f32>,
     lm_dx: vec2<f32>, lm_dy: vec2<f32>, normal: vec3<f32>, light_levels: vec2<f32>) -> vec2<f32> {
     var mul = vec2(1.0);
     let b_grad = vec2(lm_dx.x, lm_dy.x);
-    if dot(b_grad, b_grad) > 1e-10 && light_levels.x > 0.02 {
+    if dot(b_grad, b_grad) > 1e-10 && light_levels.x > 0.10 {
         let dir = pos_dx * b_grad.x + pos_dy * b_grad.y;
         let len_sq = dot(dir, dir);
         if len_sq > 1e-10 {
             let align = clamp(dot(dir * inverseSqrt(len_sq), normal) + 0.8, 0.0, 1.0);
-            mul.x = clamp((align * 0.55 + 0.45) * inverseSqrt(sqrt(light_levels.x) + 0.05), 0.65, 1.35);
+            let raw_mul = clamp((align * 0.50 + 0.50) * inverseSqrt(sqrt(light_levels.x) + 0.08), 0.72, 1.18);
+            mul.x = mix(1.0, raw_mul, smoothstep(0.10, 0.36, light_levels.x));
         }
     }
     let s_grad = vec2(lm_dx.y, lm_dy.y);
@@ -579,6 +580,89 @@ fn linear_step(edge0: f32, edge1: f32, x: f32) -> f32 {
     return clamp((x - edge0) / (edge1 - edge0), 0.0, 1.0);
 }
 
+// Single-site wave_noise helper for lava (keeps [material] static texture-read count minimal).
+fn lava_noise(uv: vec2<f32>) -> vec3<f32> {
+    return textureSampleLevel(wave_noise, wave_noise_sampler, uv, 0.0).rgb;
+}
+
+// Physically-based Minecraft-native Molten Lava Shader:
+// Preserves 100% of Minecraft's pixel-art lava texture while driving its thermal state
+// with Stora et al. (GI'99) macro convection crusting, flow-shear heating, Planck blackbody
+// chromaticity, Stefan-Boltzmann HDR radiance, and basaltic crust rim sheen.
+fn shaded_lava(input: MaterialInput) -> vec4<f32> {
+    let dist = length(input.position);
+    let view = -input.position / max(dist, 1e-5);
+    let world = input.position + frame.camera_position;
+    let flat = input.normal;
+    let side = input.face >= 2u;
+    let flowing = side || abs(flat.y) < 0.985;
+
+    // Flow-aware macro coordinates (breaks up 1x1 block uniformity across large lava oceans
+    // without replacing Minecraft's crisp pixel-art lava texture).
+    let axis_u = select(vec3(1.0, 0.0, 0.0), vec3(0.0, 0.0, -1.0), input.face >= 4u);
+    let axis_v = select(vec3(0.0, 0.0, 1.0), vec3(0.0, 1.0, 0.0), side);
+    var coord = vec2(dot(world, axis_u), dot(world, axis_v));
+    var flow_vel = vec2(0.012, -0.009);
+    if side {
+        coord = vec2(coord.x * 1.2, coord.y * 0.45);
+        flow_vel = vec2(0.0, 0.18);
+    } else if flowing {
+        let downhill = normalize(flat.xz + vec2(1e-5, 0.0));
+        flow_vel = -downhill * 0.07;
+    }
+
+    // 1. Extract Minecraft's native pixel-art lava heat & color from input.albedo.
+    //    Bright yellow pixels in the vanilla lava texture = hot molten magma;
+    //    darker orange/brown pixels = cooler crusted basalt skin.
+    let mc_albedo = max(input.albedo.rgb, vec3(0.001));
+    let mc_luma = dot(mc_albedo, frame.luminance);
+    // Normalize vanilla lava texel brightness into a crisp [0, 1] pixel-art heat map.
+    let tex_heat = clamp((mc_luma - 0.14) / 0.62, 0.0, 1.0);
+
+    // 2. Texel-snapped macro tectonic convection (~20-90m scale):
+    //    Quantized to Minecraft's 16x16 texel grid so thermal variation aligns cleanly
+    //    with the pixel art (zero smooth contour rings or non-pixelated ripples).
+    let t = frame.time;
+    let p_coord = floor(coord * 16.0) * (1.0 / 16.0);
+    let macro_n = lava_noise(p_coord * 0.009 + flow_vel * (t * 0.30));
+    let conv_n = lava_noise(p_coord * 0.026 - flow_vel.yx * (t * 0.22) + vec2(0.37, 0.71));
+
+    let magma_river = smoothstep(0.22, 0.82, macro_n.r * 0.65 + conv_n.r * 0.35);
+    let pulse = 0.035 * sin(t * 0.72 + macro_n.b * TAU + conv_n.b * 3.0);
+    // Stora et al. (1999): flowing streams & vertical lavafalls fracture crust and stay hotter.
+    let flow_heat = select(0.0, select(0.16, 0.26, side), flowing);
+
+    // Keep the entire lava sea molten (zero black patches): cooler convection zones
+    // glow rich deep volcanic crimson-orange while hotter currents & lavafalls surge
+    // up the Planck blackbody curve into bright molten gold.
+    let env_temp = clamp(0.54 + 0.34 * magma_river + flow_heat * 0.75 + pulse, 0.48, 1.0);
+    let temp = clamp(mix(env_temp * 0.78, 0.58 + 0.42 * env_temp, tex_heat), 0.42, 1.0);
+
+    // Crust mask on cooled, darker texels of the Minecraft lava texture.
+    let crust = 1.0 - smoothstep(0.26, 0.66, temp);
+
+    // 3. Physical Planck blackbody emission blended with Minecraft's texture chroma
+    //    so pixel-art detail stays crisp while temperature shifts hue & HDR intensity naturally.
+    let bb = lava_blackbody(temp);
+    let mc_chroma = mc_albedo / max(mc_luma, 0.08);
+    let emission = bb * mix(vec3(1.0), clamp(mc_chroma, vec3(0.55), vec3(1.45)), 0.35);
+
+    // 4. Cooled basaltic crust shading on dark pixels (charred rock + subtle glassy Fresnel sheen).
+    let env_tint = select(vec3(0.20, 0.08, 0.035),
+        pow(max(frame.fog_color, vec3(0.12, 0.04, 0.015)), vec3(2.2)) * 1.35,
+        frame.dimension == -1);
+    let no_v = clamp(dot(flat, view), 0.0, 1.0);
+    let fresnel = 0.04 + 0.96 * pow(1.0 - no_v, 4.0);
+    let basalt_albedo = mix(vec3(0.038, 0.026, 0.022), mc_albedo * 0.18, 0.5);
+    let crust_diffuse = basalt_albedo * (env_tint + vec3(0.18, 0.045, 0.01) * (1.0 - crust));
+    let crust_sheen = (env_tint + vec3(0.22, 0.06, 0.012)) * (fresnel * 0.32 * crust);
+    let edge_sss = vec3(0.42, 0.04, 0.003) * (crust * smoothstep(0.16, 0.46, temp) * 0.50);
+
+    let final_rgb = crust_diffuse + crust_sheen + edge_sss + emission;
+    set_surface(flat, 0.0, lava_surface_payload(tex_heat, temp));
+    return vec4(final_rgb, input.albedo.a);
+}
+
 fn material(input: MaterialInput) -> Surface {
     // Compute derivatives in uniform control flow for directional lightmaps, Nyquist bump, and LabPBR POM.
     let pos_dx = dpdx(input.position);
@@ -588,15 +672,25 @@ fn material(input: MaterialInput) -> Surface {
     let uv_dx = dpdx(input.uv);
     let uv_dy = dpdy(input.uv);
 
+    if input.fluid == 2u {
+        return surface_fog(shaded_lava(input), input.position);
+    }
+
     if frame.dimension == -1 {
-        // Custom Nether shading: warm desaturated ambient + directional blocklight + glowing emission.
+        // Custom Nether shading: biome-tinted cavern fill + warm downward magma-sea bounce
+        // + directional face contrast so unlit cliffs never crush to pitch black.
         let albedo = input.albedo.rgb * input.tint.rgb;
         let ao = clamp(input.ao, 0.0, 1.0);
-        let directional = (0.9 + 0.1 * input.normal.x) * (0.8 + 0.2 * abs(input.normal.y));
+        let directional = (0.86 + 0.14 * input.normal.x) * (0.76 + 0.24 * abs(input.normal.y));
         let dir_lm = directional_lightmap_mul(pos_dx, pos_dy, lm_dx, lm_dy, input.normal, input.light);
-        let fog_tint = pow(max(frame.fog_color, vec3(0.08, 0.03, 0.02)), vec3(2.2));
-        let luma = dot(fog_tint, frame.luminance);
-        let ambient = mix(fog_tint, vec3(luma), 0.45) * (1.85 * directional * ao);
+        let fog_tint = pow(max(frame.fog_color, vec3(0.14, 0.06, 0.04)), vec3(2.2));
+        let fog_luma = max(dot(fog_tint, frame.luminance), 1e-4);
+        let fog_norm = fog_tint / fog_luma;
+        let ambient_tint = mix(fog_norm, vec3(1.0), 0.38);
+        // Subtle warm bounce from the molten lava sea below onto downward-facing ledges/overhangs.
+        let lava_bounce = vec3(1.0, 0.42, 0.16) * (0.09 * (0.5 - 0.5 * input.normal.y));
+        let base_amb = (ambient_tint * clamp(0.24 + 0.35 * fog_luma, 0.28, 0.42) + lava_bounce) * mix(0.46, 1.0, ao);
+        let ambient = (base_amb + vec3(1.5 * frame.night_vision) * ao) * directional;
         let block = surface_blocklight(input.position, input.light, ao, directional) * dir_lm.x;
         let glow = albedo * (0.65 * input.emission);
         let lit = (albedo / PHOTON_PI) * (ambient + block * 1.15) + glow;

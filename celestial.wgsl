@@ -143,16 +143,16 @@ fn end_sky(ray: vec3<f32>, vanilla_sky: vec3<f32>) -> vec3<f32> {
     let gradient = 1.0 - smoothstep(0.0, 0.65, abs(ray.y));
 
     // Layered 3D-projected volumetric cosmic nebula clouds lit by the End sun (1 texture fetch).
-    let plane_uv = ray.xz / (abs(ray.y) + 0.28);
+    let plane_uv = ray.xz / (abs(ray.y) + 0.36);
     let t1 = frame.time * 0.0018;
-    let n1 = textureSampleLevel(wave_noise, wave_noise_sampler, plane_uv * 0.11 + vec2(t1, -t1 * 0.6), 0.0);
-    let swirl = 0.5 + 0.5 * sin(plane_uv.x * 1.45 - t1 * 6.0 + n1.g * 3.1) * cos(plane_uv.y * 1.35 + t1 * 4.5);
-    let neb_shape = smoothstep(0.28, 0.82, n1.a * 0.65 + swirl * 0.35);
-    let band = exp(-abs(ray.y - 0.12 * sin(atan2(ray.z, ray.x) * 2.0)) * 3.8);
-    let neb_density = neb_shape * (0.28 + 0.72 * band) * smoothstep(-0.35, 0.08, ray.y);
-    let neb_tint = mix(vec3(0.095, 0.032, 0.165), vec3(0.035, 0.115, 0.175), n1.r);
-    let sun_rim = vec3(0.32, 0.15, 0.24) * (photon_phase(cosine, 0.62) * smoothstep(0.25, 0.78, n1.g));
-    let nebula = (neb_tint + sun_rim * select(0.25, 1.0, end_sun)) * neb_density * 0.55;
+    let rot_uv = mat2x2<f32>(vec2(0.866, -0.5), vec2(0.5, 0.866)) * (plane_uv * 0.14);
+    let n1 = textureSampleLevel(wave_noise, wave_noise_sampler, rot_uv + vec2(t1, -t1 * 0.6), 0.0);
+    let neb_shape = smoothstep(0.24, 0.86, n1.a * 0.62 + n1.b * 0.38);
+    let band = exp(-abs(ray.y - 0.12 * sin(atan2(ray.z, ray.x) * 2.0)) * 3.2);
+    let neb_density = neb_shape * (0.24 + 0.76 * band) * smoothstep(-0.35, 0.08, ray.y);
+    let neb_tint = mix(vec3(0.085, 0.028, 0.155), vec3(0.032, 0.105, 0.165), n1.r);
+    let sun_rim = vec3(0.28, 0.13, 0.21) * (photon_phase(cosine, 0.62) * smoothstep(0.25, 0.78, n1.g));
+    let nebula = (neb_tint + sun_rim * select(0.25, 1.0, end_sun)) * neb_density * 0.42;
 
     if !end_sun {
         return vanilla_sky * (0.55 + 0.20 * gradient) + nebula + stars;
