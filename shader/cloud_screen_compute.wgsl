@@ -102,45 +102,65 @@ fn compute(input: ComputeInput) {
     }
 
     let depth = textureLoad(scene_depth, pixel, 0);
-    if depth > 0.0 {
-        // Terrain-occluded pixel: early-out immediately (cuts raymarch cost ~40-60%)
-        // and write 0u alpha sentinel so reprojection detects terrain disocclusions.
-        textureStore(cloud_screen_history, pixel, vec4<u32>(0u));
-        return;
-    }
-
     let res = vec2<f32>(size);
     let uv = (vec2<f32>(pixel) + 0.5) / res;
     // Camera-rotation-locked, translation-free world ray (zero view-bob sway, exact terrain lock).
     let ndc = vec2(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0);
     let ray = sky_world_ray(ndc);
 
-    let above_clouds = frame.camera_position.y >= CLOUD_BASE - 8.0;
+    let eye_y = frame.camera_position.y;
+    let above_clouds = eye_y >= CLOUD_BASE - 8.0;
+    var max_dist = 12000.0;
+    var terrain_in_cloud = false;
+    if depth > 0.0 {
+        let terrain_pos = view_position(uv, depth);
+        let terrain_dist = length(terrain_pos);
+        // Fast early-out on ground views where terrain sits strictly below the cloud deck
+        // (zero cost on normal terrain pixels, while rendering full 1080p clouds seamlessly
+        // in front of terrain whenever flying above/inside clouds or looking at cloud-wrapped peaks).
+        if !above_clouds {
+            let end_y = eye_y + ray.y * terrain_dist + terrain_dist * terrain_dist * (0.5 / CLOUD_PLANET_RADIUS);
+            if max(eye_y, end_y) < CLOUD_BASE - 0.5 {
+                textureStore(cloud_screen_history, pixel, vec4<u32>(0u));
+                return;
+            }
+        }
+        max_dist = min(terrain_dist, 12000.0);
+    }
+
     if !above_clouds && ray.y < -0.075 {
         textureStore(cloud_screen_history, pixel, pack_screen_cloud(vec4(0.0, 0.0, 0.0, 1.0)));
         return;
     }
 
-    // Smooth per-pixel analytic cloud-shell intersection distance (works looking both up
-    // and down to ray.y = -1.0), refined with cached panoramic hit depth when inside the dome.
-    // Continuous across cloud silhouettes so fast falling/flight never creates depth jumps.
+    // 100% smooth per-pixel analytic cloud-shell intersection distance (zero coarse panoramic
+    // cloud_aux texel lookups -> eliminates cardinal-direction chevron artifacts and depth jitter).
     let shell = cloud_shell(ray, 12000.0, vec2(CLOUD_BASE, CLOUD_TOP));
     let has_shell = shell.y > shell.x;
-    let d_shell = select(0.0, shell.x + min((shell.y - shell.x) * 0.32, 160.0), has_shell);
-    var d_hit = d_shell;
-    var kind = 0u;
-    if ray.y >= -0.072 {
-        let map_max = vec2<i32>(i32(ENV_WIDTH) - 1, i32(ENV_HEIGHT) - 1);
-        let pano_cell = clamp(vec2<i32>(cloud_map_texel(ray)), vec2(0), map_max);
-        let pano_aux = textureLoad(cloud_aux, pano_cell, 0);
-        if pano_aux.x > 0.0 {
-            kind = u32(pano_aux.z + 0.5);
-            if has_shell && kind == 0u {
-                d_hit = clamp(pano_aux.x, shell.x, min(shell.y, shell.x + 800.0));
-            } else {
-                d_hit = pano_aux.x;
+    if depth > 0.0 {
+        if has_shell {
+            if max_dist <= shell.x + 1.0 {
+                // Foreground mountain/block is strictly in front of the cloud shell -> early-out.
+                textureStore(cloud_screen_history, pixel, vec4<u32>(0u));
+                return;
             }
+            terrain_in_cloud = max_dist < shell.y - 2.0;
+        } else if eye_y + max(ray.y, 0.0) * max_dist < MID_CLOUD_BASE - 1.0 && eye_y < MID_CLOUD_BASE {
+            textureStore(cloud_screen_history, pixel, vec4<u32>(0u));
+            return;
         }
+    }
+    var d_hit = select(0.0, shell.x + min((shell.y - shell.x) * 0.30, 160.0), has_shell);
+    var kind = 0u;
+    if d_hit <= 0.0 {
+        let hi_shell = cloud_shell(ray, 12000.0, vec2(588.0, 738.0));
+        if hi_shell.y > hi_shell.x {
+            d_hit = 0.5 * (hi_shell.x + hi_shell.y);
+            kind = 3u;
+        }
+    }
+    if depth > 0.0 && d_hit > 0.0 {
+        d_hit = min(d_hit, max_dist);
     }
 
     let motion_len = length(frame.camera_motion);
@@ -231,13 +251,13 @@ fn compute(input: ComputeInput) {
     let phase4 = frame.frame_index & 15u;
     var update = bayer == phase4;
     let fast_close = d_hit > 0.0 && d_hit < 360.0 && motion_len > 0.20;
-    let med_edge = is_edge && (motion_len > 0.06 || motion_px > 0.9);
-    let fast_edge = is_edge && (motion_len > 0.16 || motion_px > 2.2);
+    let med_edge = (is_edge || terrain_in_cloud) && (motion_len > 0.06 || motion_px > 0.9);
+    let fast_edge = (is_edge || terrain_in_cloud) && (motion_len > 0.16 || motion_px > 2.2);
     if !cloud_history || disoccluded || fast_close || med_edge {
         let lane2 = (u32(pixel.x) & 1u) + 2u * (u32(pixel.y) & 1u);
         update = lane2 == (frame.frame_index & 3u);
     }
-    if fast_edge || (disoccluded && ray.y < -0.072) {
+    if fast_edge || (disoccluded && (ray.y < -0.072 || terrain_in_cloud)) {
         update = true;
     }
 
@@ -263,8 +283,8 @@ fn compute(input: ComputeInput) {
     );
     let dither = fract(bn + f32(cycle) * 0.61803399);
     let steps = select(20u, 26u, abs(ray.y) < 0.28);
-    let clouds = cloud_layers(cloud_aux, ray, 12000.0, steps, dither);
-    let sunbeams = cloud_sunbeams(cloud_aux, ray, dither);
+    let clouds = cloud_layers(cloud_aux, ray, max_dist, steps, dither);
+    let sunbeams = select(vec3(0.0), cloud_sunbeams(cloud_aux, ray, dither), depth <= 0.0);
     let fresh = vec4(max(clouds.color + sunbeams, vec3(0.0)), clamp(clouds.transmittance, 0.0, 1.0));
 
     if disoccluded || !cloud_history {

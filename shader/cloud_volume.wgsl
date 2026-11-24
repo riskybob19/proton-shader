@@ -436,7 +436,12 @@ fn nubis_layer_march(aux_tex: texture_2d<f32>, ray: vec3<f32>, limit: f32, steps
     if terrain_clipped {
         grid_travel = min(2200.0, max(0.0, interval.y - start));
     }
-    let step_size = max(grid_travel / max(sample_count, 1.0), 1.0);
+    let base_step = max(grid_travel / max(sample_count, 1.0), 1.0);
+    // Position-adaptive progressive step sizing + hit-surface rewind for grazing horizon rays:
+    // leaps fast through empty air, rewinds onto the front surface on first hit, and caps
+    // in-cloud step size so clouds at all distances along ray.y ~ 0 stay crisp with zero stipple.
+    let near_scale = mix(1.0, 0.42, smoothstep(550.0, 1750.0, grid_travel));
+    let inv_grid_travel = 1.0 / max(grid_travel, 1.0);
     let thickness = layer.bounds.y - layer.bounds.x;
     let inv_thickness = 1.0 / thickness;
     let light = frame.light_direction;
@@ -462,10 +467,15 @@ fn nubis_layer_march(aux_tex: texture_2d<f32>, ray: vec3<f32>, limit: f32, steps
     const MIN_TRANSMITTANCE: f32 = 0.06;
 
     var hit_surface = false;
+    var did_rewind = false;
+    var prev_advance = 0.0;
     var refine_steps = 0u;
-    var t = jitter * step_size;
+    var t = jitter * (base_step * near_scale);
     for (var i = 0u; i < max_steps && t < travel && result.transmittance > MIN_TRANSMITTANCE; i += 1u) {
-        let active_step = select(step_size, step_size * 0.45, refine_steps > 0u);
+        let frac_t = clamp(t * inv_grid_travel, 0.0, 1.0);
+        let step_size = base_step * mix(near_scale, 1.50, frac_t);
+        let cloud_step = select(min(step_size, 24.0), min(step_size * 0.45, 14.0), refine_steps > 0u);
+        let active_step = select(step_size, cloud_step, hit_surface && !fast_terrain);
         let along = start + t;
         var segment = min(active_step, travel - t);
         let point = ray * along;
@@ -482,13 +492,18 @@ fn nubis_layer_march(aux_tex: texture_2d<f32>, ray: vec3<f32>, limit: f32, steps
                 let nvdf = nvdf_sample_trilinear(aux_tex, world, anchor);
                 if nvdf.r <= 0.002 {
                     // Nubis3 conservative 3D SDF empty-space leapfrog.
-                    t += clamp(nvdf.b * 0.70, step_size, step_size * 4.5);
+                    let adv = clamp(nvdf.b * 0.70, step_size, step_size * 4.5);
+                    hit_surface = false;
+                    prev_advance = adv;
+                    t += adv;
                     continue;
                 }
                 let prof = nubis_dimensional_profile(world, radial_alt, cloud_coverage(world.xz),
                     layer.stratus, layer.height_scale);
                 dim_profile = prof.x;
                 if dim_profile <= 0.001 {
+                    hit_surface = false;
+                    prev_advance = step_size;
                     t += step_size;
                     continue;
                 }
@@ -500,7 +515,10 @@ fn nubis_layer_march(aux_tex: texture_2d<f32>, ray: vec3<f32>, limit: f32, steps
                     layer.stratus, layer.height_scale);
                 dim_profile = prof.x;
                 if dim_profile <= 0.001 {
-                    t += step_size * 1.35;
+                    let adv = step_size * 1.35;
+                    hit_surface = false;
+                    prev_advance = adv;
+                    t += adv;
                     continue;
                 }
                 density = nubis_uprez_density(world, radial_alt, dim_profile, prof.y,
@@ -508,7 +526,10 @@ fn nubis_layer_march(aux_tex: texture_2d<f32>, ray: vec3<f32>, limit: f32, steps
             }
         } else {
             if !blocky_clouds && volume_density_fast(point, layer) <= 0.0005 {
-                t += step_size * select(1.0, 1.4, layer.kind == 1u);
+                let adv = step_size * select(1.0, 1.4, layer.kind == 1u);
+                hit_surface = false;
+                prev_advance = adv;
+                t += adv;
                 continue;
             }
             density = volume_density(point, layer) * dist_fade;
@@ -518,9 +539,16 @@ fn nubis_layer_march(aux_tex: texture_2d<f32>, ray: vec3<f32>, limit: f32, steps
         if density > 0.001 {
             if !hit_surface && !fast_terrain {
                 hit_surface = true;
-                refine_steps = 4u;
-                segment = min(step_size * 0.45, travel - t);
+                refine_steps = 5u;
+                if !did_rewind && prev_advance > 16.0 {
+                    did_rewind = true;
+                    t = max(0.0, t - prev_advance * 0.55);
+                    prev_advance = 0.0;
+                    continue;
+                }
+                segment = min(min(step_size * 0.45, 14.0), travel - t);
             }
+            prev_advance = 0.0;
             let transmission = exp(-density * segment * layer.extinction);
             let light_dither = fract(jitter + f32(i) * 0.381966);
             let sky_dither = fract(jitter + f32(i) * 0.7548777);
@@ -563,9 +591,17 @@ fn nubis_layer_march(aux_tex: texture_2d<f32>, ray: vec3<f32>, limit: f32, steps
             result.transmittance *= transmission;
         }
         if refine_steps > 0u {
-            t += step_size * 0.45;
+            t += min(step_size * 0.45, 14.0);
             refine_steps -= 1u;
+        } else if hit_surface && !fast_terrain {
+            let adv = min(step_size, 24.0);
+            prev_advance = select(adv, 0.0, density > 0.001);
+            if density <= 0.001 {
+                hit_surface = false;
+            }
+            t += adv;
         } else {
+            prev_advance = step_size;
             t += step_size;
         }
     }

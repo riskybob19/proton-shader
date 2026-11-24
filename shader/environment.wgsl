@@ -96,29 +96,29 @@ fn cloud_shadow_from_aux(aux_tex: texture_2d<f32>, position: vec3<f32>) -> f32 {
         cell / vec2<f32>(textureDimensions(aux_tex)), 0.0).r;
 }
 
-// Pole-free Octahedral Upper-Hemisphere cloud map (768x768, Cigolle et al.):
-// covers direction.y in [-0.08, +1.0] with zenith (0, 1, 0) at the dead center (0.5, 0.5),
-// completely eliminating equirectangular zenith pole pinching and radial spokes.
+// Pole-free, crease-free Lambert Azimuthal Equal-Area Disk hemisphere map (768x768):
+// covers direction.y in [-0.08, +1.0] with zenith (0, 1, 0) at (0.5, 0.5).
+// 100% rotationally isotropic in azimuth — zero zenith pole spokes AND zero 45-degree
+// octahedral cardinal-direction V-chevron creases at N/S/E/W.
+const CLOUD_DISK_RADIUS: f32 = 0.495;
+
 fn cloud_map_texel(direction: vec3<f32>) -> vec2<f32> {
     let y_remapped = clamp((direction.y - CLOUD_MIN_Y) / (1.0 - CLOUD_MIN_Y), 0.0, 1.0);
+    let rho = sqrt(max(1.0 - y_remapped, 0.0));
     let xz_len = length(direction.xz);
-    let new_xz = sqrt(max(1.0 - y_remapped * y_remapped, 0.0));
-    let h = select(vec3(0.0, 1.0, 0.0), vec3(direction.x * (new_xz / xz_len), y_remapped, direction.z * (new_xz / xz_len)), xz_len > 1e-6);
-    let p = h.xz / (abs(h.x) + abs(h.y) + abs(h.z));
-    let oct = vec2(p.x + p.y, p.x - p.y);
-    let uv = clamp(oct * 0.5 + 0.5, vec2(0.0), vec2(1.0));
+    let dir_xz = select(vec2(0.0, 0.0), direction.xz / xz_len, xz_len > 1e-6);
+    let uv = clamp(vec2(0.5) + dir_xz * (rho * CLOUD_DISK_RADIUS), vec2(0.0), vec2(1.0));
     return vec2(0.5) + uv * vec2(ENV_WIDTH - 1.0, ENV_HEIGHT - 1.0);
 }
 
 fn cloud_map_direction(texel: vec2<f32>) -> vec3<f32> {
     let uv = clamp((texel - vec2(0.5)) / vec2(ENV_WIDTH - 1.0, ENV_HEIGHT - 1.0), vec2(0.0), vec2(1.0));
-    let oct = uv * 2.0 - 1.0;
-    let p = vec2(0.5 * (oct.x + oct.y), 0.5 * (oct.x - oct.y));
-    let hy = max(1.0 - abs(p.x) - abs(p.y), 0.0);
-    let h = normalize(vec3(p.x, hy, p.y));
-    let dy = clamp(h.y * (1.0 - CLOUD_MIN_Y) + CLOUD_MIN_Y, -1.0, 1.0);
-    let xz_len = length(h.xz);
-    let new_xz = sqrt(max(1.0 - dy * dy, 0.0));
-    let xz = select(vec2(0.0, 0.0), h.xz * (new_xz / xz_len), xz_len > 1e-6);
+    let d = (uv - vec2(0.5)) * (1.0 / CLOUD_DISK_RADIUS);
+    let r2 = dot(d, d);
+    let y_remapped = clamp(1.0 - r2, 0.0, 1.0);
+    let dy = clamp(y_remapped * (1.0 - CLOUD_MIN_Y) + CLOUD_MIN_Y, -1.0, 1.0);
+    let d_len = length(d);
+    let horiz = sqrt(max(1.0 - dy * dy, 0.0));
+    let xz = select(vec2(0.0, 0.0), d * (horiz / d_len), d_len > 1e-6);
     return vec3(xz.x, dy, xz.y);
 }

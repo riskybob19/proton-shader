@@ -1,7 +1,7 @@
 schema = 1
 id = "photon_prototype"
 name = "Proton"
-version = "1.4.0"
+version = "1.4.1"
 api = "0.2"
 description = "Proton — a high-performance native Horizon shader with temporal hybrid GI, 3D colored LPV, Decima-inspired distant shadows, volumetric clouds & god rays, neural foliage/water optics, and RDR2 filmic grading."
 authors = ["Based on Photon by SixthSurge"]

@@ -295,17 +295,20 @@ fn post(input: PostInput) -> vec4<f32> {
                 let rim_haze = raymarch_air_fog(ray, sky_dist, 0.5, sky_access, true);
                 border_fog_color = border_fog_color * rim_haze.transmittance + rim_haze.scattering;
             }
-            // When flying above clouds looking down at distant terrain, keep foreground clouds in front of the border.
-            let cloud_below = smoothstep(CLOUD_BASE - 8.0, CLOUD_BASE + 16.0, frame.camera_position.y)
-                * smoothstep(0.02, -0.08, ray.y);
-            if cloud_below > 0.001 {
-                let resolved_cloud_a = clamp(dot(resolved_trans, vec3(0.333333)), 0.0, 1.0);
-                let downward_backdrop = border_fog_color * resolved_cloud_a + resolved_scatter;
-                border_fog_color = mix(border_fog_color, downward_backdrop, cloud_below);
-            }
             let cave = (1.0 - smoothstep(49.0, 63.0, frame.camera_position.y))
                 * (1.0 - smoothstep(0.03, 0.30, frame.eye_light_smooth.y));
             color = mix(color, border_fog_color * (1.0 - cave), border * sky_access);
+        }
+    }
+    // Composite unified native 1.0x screen-space clouds cleanly in front of terrain + fog + border
+    // whenever clouds sit between camera and terrain (eliminates terrain-behind-cloud seam & 9-step rings).
+    if !sky && frame.dimension == 0 && frame.eye_in < 2u && volumetric_clouds && cloud_cover > 0.0 {
+        let sc_size = vec2<i32>(textureDimensions(cloud_screen_history));
+        let sc_px = clamp(vec2<i32>(input.pixel), vec2(0), sc_size - 1);
+        let sc_raw = unpack_u32_vec4(textureLoad(cloud_screen_history, sc_px, 0));
+        if sc_raw.a >= 0.01 {
+            let sc = vec4(unpack_hdr8(sc_raw.rgb), clamp((sc_raw.a - 0.02) * (1.0 / 0.98), 0.0, 1.0));
+            color = color * sc.a + sc.rgb;
         }
     }
     return vec4(color, 1.0);

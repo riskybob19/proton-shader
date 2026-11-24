@@ -137,48 +137,12 @@ fn use_volume_composite() -> bool {
             || (rainbows && frame.wetness > 0.0))));
 }
 
-fn clouds_at(ray: vec3<f32>, depth: f32, distance: f32, pixel: vec2<f32>) -> vec4<f32> {
-    if frame.eye_in != 0u || !volumetric_clouds || cloud_cover <= 0.0 {
-        return vec4(0.0, 0.0, 0.0, 1.0);
-    }
-    let ign = fract(52.9829189 * fract(dot(floor(pixel), vec2(0.06711056, 0.00583715))));
-    let raw_jitter = fract(ign + f32(frame.frame_index & 63u) * 0.61803399);
-    let move_damp = smoothstep(0.05, 0.45, length(frame.camera_motion));
-    let jitter = mix(raw_jitter, 0.5 + (raw_jitter - 0.5) * 0.40, move_damp);
-    // Open-sky clouds (including downward rays when flying above clouds) are rendered at
-    // full native 1.0x resolution in cloud_screen_compute.wgsl + composite.wgsl.
-    if depth <= 0.0 {
-        return vec4(0.0, 0.0, 0.0, 1.0);
-    }
-    let eye = frame.camera_position.y;
-    if eye + distance < CLOUD_BASE {
-        return vec4(0.0, 0.0, 0.0, 1.0);
-    }
-    if distance < 3000.0 && max(eye, cloud_radial_height(eye + ray.y * distance, ray.xz * distance)) < CLOUD_BASE {
-        return vec4(0.0, 0.0, 0.0, 1.0);
-    }
-    // Terrain clouds use the NVDF+SDF-accelerated 9..18-step march with baked voxel
-    // sun transmittance so mountain/high-altitude passes stay strictly under budget.
-    return cloud_volume_terrain(cloud_aux, ray, distance, jitter);
+fn clouds_at(_ray: vec3<f32>, _depth: f32, _distance: f32, _pixel: vec2<f32>) -> vec4<f32> {
+    // All Overworld clouds (both open-sky and terrain-clipped) now render uniformly at native
+    // 1.0x resolution in cloud_screen_compute.wgsl + composite.wgsl for zero terrain seam.
+    return vec4(0.0, 0.0, 0.0, 1.0);
 }
 
-fn cloud_transmittance_at(ray: vec3<f32>, depth: f32, distance: f32, pixel: vec2<f32>) -> f32 {
-    if frame.eye_in != 0u || !volumetric_clouds || cloud_cover <= 0.0 {
-        return 1.0;
-    }
-    let ign = fract(52.9829189 * fract(dot(floor(pixel), vec2(0.06711056, 0.00583715))));
-    let raw_jitter = fract(ign + f32(frame.frame_index & 63u) * 0.61803399);
-    let move_damp = smoothstep(0.05, 0.45, length(frame.camera_motion));
-    let jitter = mix(raw_jitter, 0.5 + (raw_jitter - 0.5) * 0.40, move_damp);
-    if depth <= 0.0 {
-        return 1.0;
-    }
-    let eye = frame.camera_position.y;
-    if eye + distance < CLOUD_BASE {
-        return 1.0;
-    }
-    if distance < 3000.0 && max(eye, cloud_radial_height(eye + ray.y * distance, ray.xz * distance)) < CLOUD_BASE {
-        return 1.0;
-    }
-    return cloud_volume_transmittance_only(cloud_aux, ray, distance, jitter);
+fn cloud_transmittance_at(_ray: vec3<f32>, _depth: f32, _distance: f32, _pixel: vec2<f32>) -> f32 {
+    return 1.0;
 }
