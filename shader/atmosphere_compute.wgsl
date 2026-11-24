@@ -1,212 +1,222 @@
-override neural_atmosphere: bool = true;
+// 0 = Live 8-Wavelength Spectral Hillaire (EGSR 2020 + fgarlin spectral matrix), 1 = Classic Bruneton LUT.
+override atmosphere_model: u32 = 0u;
 
-// 16-wavelength (380-740nm) spectral spherical-shell multi-scattering atmosphere MLP (6 -> 16 -> 16 -> 6, ReLU).
-// Rayleigh (lambda^-4) + Mie aerosols + Stratospheric Chappuis Ozone + Hillaire infinite-order MS -> CIE 1931 -> Rec.2020.
-// Validation R2(log): bg=0.9995, mie=0.9982 | energy ratio vs 16-band spectral solver: bg=0.9988, mie=1.0054.
-const NA_W1 = array<vec4<f32>, 24>(
-    vec4(1.23872, -11.96885, 0.68765, 0.74943),
-    vec4(0.50820, -2.61338, 1.21289, 0.59843),
-    vec4(-0.43465, -0.00852, -0.17789, 0.14378),
-    vec4(0.57904, 0.01471, 0.18283, 0.24711),
-    vec4(0.12315, -0.00396, 0.09572, -0.50240),
-    vec4(-0.12751, 0.00366, -0.08307, 0.54886),
-    vec4(0.72312, -0.00007, 0.30820, 0.61444),
-    vec4(1.58627, -1.53033, -0.18887, -0.38083),
-    vec4(0.06610, -0.28879, -0.50217, -2.81334),
-    vec4(-0.03583, -0.18100, 1.03313, 2.22367),
-    vec4(0.25519, -0.21045, 0.09781, -0.03715),
-    vec4(-0.26297, 0.19599, -0.05723, 0.02269),
-    vec4(-0.03724, -0.18555, 0.60356, 1.55754),
-    vec4(1.49731, -0.53962, 1.24632, 1.34898),
-    vec4(0.21554, -0.85331, 0.47570, -0.22865),
-    vec4(0.37411, -0.64958, -0.37358, 0.19513),
-    vec4(0.42299, -0.09396, -0.33700, -0.05532),
-    vec4(-0.41007, 0.12834, 0.39550, 0.05022),
-    vec4(-0.89781, 0.76411, 0.02294, -0.10797),
-    vec4(1.03287, -0.67027, 0.25138, 0.14716),
-    vec4(0.78075, -3.52296, 0.82363, -0.14762),
-    vec4(-0.86651, 1.00500, -0.18162, 0.64319),
-    vec4(0.00852, -0.13790, 0.37124, -0.18343),
-    vec4(0.00861, 0.10284, -0.41141, -0.33307),
-);
+// 8-wavelength (400, 445, 490, 535 | 575, 610, 650, 700 nm) physical atmosphere cross-sections (km^-1):
+//  - Bucholtz (1995) Rayleigh scattering (~lambda^-4.08, H_R = 8.4 km)
+//  - Angstrom continental Mie aerosol extinction (~lambda^-0.85, H_M = 1.25 km, albedo = 0.90)
+//  - Brion-Daumont-Malicet / Serdyuchenko Chappuis Ozone (O3, 300 DU, tent profile 10..40 km peak 25 km)
+const SPEC_BETA_R_LO = vec4<f32>(0.045467, 0.029430, 0.019866, 0.013881);
+const SPEC_BETA_R_HI = vec4<f32>(0.010343, 0.008127, 0.006272, 0.004636);
+const SPEC_BETA_M_LO = vec4<f32>(0.001901, 0.001736, 0.001600, 0.001484);
+const SPEC_BETA_M_HI = vec4<f32>(0.001396, 0.001328, 0.001258, 0.001181);
+const SPEC_BETA_O_LO = vec4<f32>(0.000006, 0.000100, 0.000551, 0.001741);
+const SPEC_BETA_O_HI = vec4<f32>(0.003019, 0.003100, 0.001534, 0.000551);
 
-const NA_B1 = array<vec4<f32>, 4>(
-    vec4(0.14441, -0.07017, 0.04650, -0.03901),
-    vec4(0.16102, 0.33934, -0.08054, 0.43964),
-    vec4(-0.01790, 0.23130, 0.20086, 0.06513),
-    vec4(0.21514, 0.27229, 0.16173, -0.02755),
-);
+// ASTM E-490 AM0 solar spectrum * CIE 1931 2-deg CMFs -> Rec.2020 spectral integration matrix
+// (Y-normalized so flat white reflectance under AM0 matches Photon sunlight_color in Rec.2020).
+const SPEC_M2020_R_LO = vec4<f32>( 0.001406,  0.068290, -0.061497,  0.015809);
+const SPEC_M2020_R_HI = vec4<f32>( 0.395517,  0.502760,  0.159548,  0.003162);
+const SPEC_M2020_G_LO = vec4<f32>(-0.001598, -0.074240,  0.146421,  0.540786);
+const SPEC_M2020_G_HI = vec4<f32>( 0.318119,  0.046376, -0.003993,  0.001255);
+const SPEC_M2020_B_LO = vec4<f32>( 0.019298,  0.733166,  0.190559, -0.002975);
+const SPEC_M2020_B_HI = vec4<f32>(-0.008163, -0.001224,  0.000106, -0.000033);
 
-const NA_W2 = array<vec4<f32>, 64>(
-    vec4(-0.00229, -0.52555, -0.63656, 0.55366),
-    vec4(-3.49379, -2.85511, -0.35533, -0.50307),
-    vec4(-1.59817, 0.03970, -0.08082, -0.17128),
-    vec4(-0.06277, 0.09237, 0.02689, 0.00937),
-    vec4(0.87207, 0.20172, 0.34115, -0.08201),
-    vec4(-0.32503, -1.47825, 0.76902, -0.10112),
-    vec4(0.40374, 0.16990, 0.63436, -0.89502),
-    vec4(-0.11295, -0.19446, -0.37217, -0.41501),
-    vec4(-0.23192, 0.24427, -0.00449, -0.26508),
-    vec4(0.02448, 0.69033, -0.22635, -0.72367),
-    vec4(0.23059, 0.22682, 0.10878, 0.09468),
-    vec4(-0.61137, -0.02795, -0.44271, -0.14539),
-    vec4(-0.03951, 0.01688, 0.61687, 0.23476),
-    vec4(-0.69161, -1.19046, -0.60676, 0.11448),
-    vec4(0.09835, 0.03761, 0.05471, -0.44938),
-    vec4(-0.06171, 0.06604, 0.02739, -0.20522),
-    vec4(0.46645, 0.10780, -0.19944, -0.42124),
-    vec4(-0.20206, -0.09420, -1.58517, -0.57916),
-    vec4(-0.31082, -0.49667, -0.38453, 0.07156),
-    vec4(0.21107, -0.15504, 0.57681, 0.26507),
-    vec4(-0.09330, -0.09071, 0.10803, 0.08369),
-    vec4(0.08605, -0.01896, -0.60627, -0.69271),
-    vec4(-0.10522, -0.42963, -0.45202, -0.18151),
-    vec4(-0.30506, -0.27950, -1.58260, -1.33979),
-    vec4(-0.53167, 0.31177, 0.40580, 0.30568),
-    vec4(0.55982, 0.36422, -0.14952, -0.52851),
-    vec4(-0.29209, -0.42760, 0.67307, 0.15464),
-    vec4(0.03516, -1.01005, -0.56080, 0.11378),
-    vec4(0.03952, -0.39657, -0.05431, -0.05181),
-    vec4(-0.27526, -0.30209, 0.96212, 0.31640),
-    vec4(-0.25272, -0.44275, 0.89759, 0.21676),
-    vec4(0.00022, -0.03381, 0.16359, 0.09587),
-    vec4(-0.33618, -0.40077, 0.25630, -0.22238),
-    vec4(-0.90745, -0.13934, 0.23860, -5.24967),
-    vec4(-0.08000, -0.12315, -0.52288, -0.29589),
-    vec4(0.06702, -0.31507, 0.04510, 0.06786),
-    vec4(0.43554, 0.24854, 0.16227, 0.36711),
-    vec4(0.14227, -0.92456, -0.65401, 0.68698),
-    vec4(0.29387, 0.31245, -0.41792, 0.40419),
-    vec4(-0.89669, -0.03057, -0.37751, 0.17648),
-    vec4(-0.26697, -0.12945, -0.40066, 0.27807),
-    vec4(-0.43149, -0.26090, 0.11862, 0.32585),
-    vec4(0.25191, -0.28117, -0.32303, 0.75426),
-    vec4(-0.06921, -0.63996, 0.25114, -0.81853),
-    vec4(0.18378, -0.27931, -0.67492, 0.13174),
-    vec4(-0.71741, 0.42871, 0.31166, -0.91098),
-    vec4(0.43888, -0.35282, -0.10752, 0.12087),
-    vec4(-0.00820, 0.36581, 0.17010, 0.14620),
-    vec4(-0.52724, -0.82041, 0.67093, -0.48550),
-    vec4(-0.66468, -0.03340, -7.17546, 0.08007),
-    vec4(-1.04441, 0.99046, -1.58006, 0.22557),
-    vec4(0.38416, -0.19771, -0.13642, -0.35134),
-    vec4(0.72033, -0.24153, 0.90093, 0.04951),
-    vec4(-0.35982, -0.69721, -0.09051, -0.24783),
-    vec4(0.58922, 0.02025, -0.05122, 0.39630),
-    vec4(0.05015, 0.35275, -0.10652, -0.33337),
-    vec4(0.27769, -0.13482, 0.10718, -0.14748),
-    vec4(0.06500, 0.49247, -0.04544, -0.17616),
-    vec4(-0.00206, -0.07075, 0.60683, -0.23262),
-    vec4(-0.54280, -0.39637, -0.60959, -0.27573),
-    vec4(0.97876, 0.13845, -0.28083, 0.37740),
-    vec4(-0.61015, -0.12793, -0.30183, 0.16139),
-    vec4(-0.09006, -0.08864, -0.27580, -0.66126),
-    vec4(0.07795, 0.14685, 0.03388, 0.11512),
-);
+const SPEC_R_EARTH: f32 = 6371.0;
+const SPEC_R_TOP: f32 = 6481.0;
+const SPEC_H_R: f32 = 8.4;
+const SPEC_H_M: f32 = 1.25;
+const SPEC_MIE_ALBEDO: f32 = 0.90;
 
-const NA_B2 = array<vec4<f32>, 4>(
-    vec4(0.29743, 0.33893, -0.18739, -0.22221),
-    vec4(-0.16000, -0.06551, 0.12045, -0.49769),
-    vec4(0.49598, -0.10827, -0.02134, -0.01955),
-    vec4(0.24717, -0.11343, 0.07059, 0.00000),
-);
+struct Spec8 {
+    lo: vec4<f32>,
+    hi: vec4<f32>,
+}
 
-const NA_W3_BG = array<vec3<f32>, 16>(
-    vec3(0.18728, 0.02217, 0.02903),
-    vec3(0.33947, 0.28061, 0.07292),
-    vec3(0.56229, 0.26989, 0.01570),
-    vec3(-0.04729, 0.48122, 0.47139),
-    vec3(-0.10686, -0.02834, 0.15963),
-    vec3(-0.31575, -0.35288, -0.21965),
-    vec3(0.48120, 0.41815, 0.58266),
-    vec3(-0.24335, -0.32293, -0.63218),
-    vec3(-0.22266, 0.04660, 0.68130),
-    vec3(-0.46865, -0.45765, 0.25144),
-    vec3(0.12946, -0.60816, 0.84279),
-    vec3(0.68913, 0.82445, 0.84674),
-    vec3(0.55025, 0.63251, 0.60954),
-    vec3(-1.02075, -0.34421, 0.03839),
-    vec3(3.79571, 3.63180, 1.66354),
-    vec3(-0.08012, -0.22363, 0.19641),
-);
-
-const NA_B3_BG = vec3(0.00139, -0.00044, 0.00426);
-
-const NA_W3_MIE = array<vec3<f32>, 16>(
-    vec3(1.43691, 1.27890, 0.88884),
-    vec3(-0.27407, -0.17438, 0.11783),
-    vec3(0.04170, 0.36200, 1.00838),
-    vec3(-0.46621, -0.09360, -0.40125),
-    vec3(-0.22704, 0.20398, -0.58602),
-    vec3(-0.77324, 0.00241, -0.42203),
-    vec3(0.04166, 0.16202, 0.41309),
-    vec3(-0.15168, -0.27253, -0.40912),
-    vec3(0.30875, 0.19126, -0.19523),
-    vec3(-0.29932, -0.35644, 0.02675),
-    vec3(0.13557, -0.23701, 0.62421),
-    vec3(0.07220, -0.03664, -0.23095),
-    vec3(0.13721, 0.14113, 0.19124),
-    vec3(0.25400, -0.07378, -0.11854),
-    vec3(2.47172, 2.25858, 1.28714),
-    vec3(0.39278, 0.18506, 0.43350),
-);
-
-const NA_B3_MIE = vec3(0.00015, -0.00234, -0.00069);
-
-struct NeuralAtmoSample {
+struct SpectralAtmoSample {
     background: vec3<f32>,
     aerosols: vec3<f32>,
 }
 
-fn neural_atmosphere_eval(view_y: f32, light_y: f32, cosine: f32, az_cos: f32) -> NeuralAtmoSample {
-    let vy = clamp(view_y, -0.05, 1.0);
-    let ly = clamp(light_y, -0.35, 1.0);
-    let x = array<f32, 6>(
-        vy,
-        sqrt(max(vy, 0.0)),
-        ly,
-        ly * abs(ly),
-        cosine,
-        az_cos,
+fn spec8_to_rec2020(s: Spec8) -> vec3<f32> {
+    return max(vec3(
+        dot(SPEC_M2020_R_LO, s.lo) + dot(SPEC_M2020_R_HI, s.hi),
+        dot(SPEC_M2020_G_LO, s.lo) + dot(SPEC_M2020_G_HI, s.hi),
+        dot(SPEC_M2020_B_LO, s.lo) + dot(SPEC_M2020_B_HI, s.hi),
+    ), vec3(0.0));
+}
+
+fn spec_ray_sphere_exit(r: f32, mu: f32, radius: f32) -> f32 {
+    let b = r * mu;
+    let disc = b * b - (r * r - radius * radius);
+    if disc < 0.0 {
+        return 0.0;
+    }
+    return max(0.0, -b + sqrt(disc));
+}
+
+fn spec_hits_ground(r: f32, mu: f32) -> bool {
+    let r_g = SPEC_R_EARTH - 0.5;
+    return mu < 0.0 && (r * r * (1.0 - mu * mu)) < (r_g * r_g);
+}
+
+fn spec_densities(h: f32) -> vec3<f32> {
+    let hc = max(h, 0.0);
+    return vec3(
+        exp(-hc * (1.0 / SPEC_H_R)),
+        exp(-hc * (1.0 / SPEC_H_M)),
+        max(0.0, 1.0 - abs(h - 25.0) * (1.0 / 15.0)),
     );
-    var h1 = array<vec4<f32>, 4>(NA_B1[0], NA_B1[1], NA_B1[2], NA_B1[3]);
-    for (var i = 0u; i < 6u; i += 1u) {
-        let xi = x[i];
-        h1[0] += NA_W1[i] * xi;
-        h1[1] += NA_W1[6u + i] * xi;
-        h1[2] += NA_W1[12u + i] * xi;
-        h1[3] += NA_W1[18u + i] * xi;
-    }
-    h1[0] = max(h1[0], vec4(0.0));
-    h1[1] = max(h1[1], vec4(0.0));
-    h1[2] = max(h1[2], vec4(0.0));
-    h1[3] = max(h1[3], vec4(0.0));
+}
 
-    var h2 = array<vec4<f32>, 4>(NA_B2[0], NA_B2[1], NA_B2[2], NA_B2[3]);
-    for (var g = 0u; g < 4u; g += 1u) {
-        let base = g * 4u;
-        let v = h1[g];
-        h2[0] += NA_W2[base] * v.x + NA_W2[base + 1u] * v.y + NA_W2[base + 2u] * v.z + NA_W2[base + 3u] * v.w;
-        h2[1] += NA_W2[16u + base] * v.x + NA_W2[17u + base] * v.y + NA_W2[18u + base] * v.z + NA_W2[19u + base] * v.w;
-        h2[2] += NA_W2[32u + base] * v.x + NA_W2[33u + base] * v.y + NA_W2[34u + base] * v.z + NA_W2[35u + base] * v.w;
-        h2[3] += NA_W2[48u + base] * v.x + NA_W2[49u + base] * v.y + NA_W2[50u + base] * v.z + NA_W2[51u + base] * v.w;
+fn spec_solar_transmittance(r: f32, mu_s: f32, beta_m_lo: vec4<f32>, beta_m_hi: vec4<f32>) -> Spec8 {
+    if spec_hits_ground(r, mu_s) {
+        return Spec8(vec4(0.0), vec4(0.0));
     }
-    h2[0] = max(h2[0], vec4(0.0));
-    h2[1] = max(h2[1], vec4(0.0));
-    h2[2] = max(h2[2], vec4(0.0));
-    h2[3] = max(h2[3], vec4(0.0));
+    let dist = spec_ray_sphere_exit(r, mu_s, SPEC_R_TOP);
+    if dist <= 0.0 {
+        return Spec8(vec4(1.0), vec4(1.0));
+    }
+    var tau = vec3(0.0);
+    var t_prev = 0.0;
+    for (var i = 1u; i <= 6u; i += 1u) {
+        let u = f32(i) * (1.0 / 6.0);
+        let t_cur = dist * (u * u);
+        let dt = t_cur - t_prev;
+        let tm = 0.5 * (t_prev + t_cur);
+        t_prev = t_cur;
+        let rp = sqrt(r * r + tm * tm + 2.0 * r * tm * mu_s);
+        tau += spec_densities(rp - SPEC_R_EARTH) * dt;
+    }
+    let od_lo = SPEC_BETA_R_LO * tau.x + beta_m_lo * tau.y + SPEC_BETA_O_LO * tau.z;
+    let od_hi = SPEC_BETA_R_HI * tau.x + beta_m_hi * tau.y + SPEC_BETA_O_HI * tau.z;
+    return Spec8(exp(-od_lo), exp(-od_hi));
+}
 
-    var out_bg = NA_B3_BG;
-    var out_mie = NA_B3_MIE;
-    for (var g = 0u; g < 4u; g += 1u) {
-        let base = g * 4u;
-        let v = h2[g];
-        out_bg += NA_W3_BG[base] * v.x + NA_W3_BG[base + 1u] * v.y + NA_W3_BG[base + 2u] * v.z + NA_W3_BG[base + 3u] * v.w;
-        out_mie += NA_W3_MIE[base] * v.x + NA_W3_MIE[base + 1u] * v.y + NA_W3_MIE[base + 2u] * v.z + NA_W3_MIE[base + 3u] * v.w;
+// Hillaire (EGSR 2020) spectral isotropic multi-scattering transfer function Psi_ms(h, mu_s)
+// evaluated across all 8 wavelengths with stratospheric twilight upper-atmosphere illumination.
+fn spec_hillaire_ms(r: f32, mu_s: f32, t_sun: Spec8,
+    beta_m_lo: vec4<f32>, beta_m_hi: vec4<f32>,
+    beta_ms_lo: vec4<f32>, beta_ms_hi: vec4<f32>) -> Spec8 {
+    let h = max(r - SPEC_R_EARTH, 0.0);
+    let er = exp(-h * (1.0 / SPEC_H_R));
+    let em = exp(-h * (1.0 / SPEC_H_M));
+    let o_up = max(0.0, 15.0 - max(h - 10.0, 0.0) * 0.5);
+
+    let tau_up_lo = SPEC_BETA_R_LO * (SPEC_H_R * er) + beta_m_lo * (SPEC_H_M * em) + SPEC_BETA_O_LO * o_up;
+    let tau_up_hi = SPEC_BETA_R_HI * (SPEC_H_R * er) + beta_m_hi * (SPEC_H_M * em) + SPEC_BETA_O_HI * o_up;
+    let sca_up_lo = SPEC_BETA_R_LO * (SPEC_H_R * er) + beta_ms_lo * (SPEC_H_M * em);
+    let sca_up_hi = SPEC_BETA_R_HI * (SPEC_H_R * er) + beta_ms_hi * (SPEC_H_M * em);
+    let p_up_lo = (vec4(1.0) - exp(-2.0 * tau_up_lo)) * (sca_up_lo / max(tau_up_lo, vec4(1e-6)));
+    let p_up_hi = (vec4(1.0) - exp(-2.0 * tau_up_hi)) * (sca_up_hi / max(tau_up_hi, vec4(1e-6)));
+
+    let tau_dn_lo = SPEC_BETA_R_LO * (SPEC_H_R * (1.0 - er)) + beta_m_lo * (SPEC_H_M * (1.0 - em));
+    let tau_dn_hi = SPEC_BETA_R_HI * (SPEC_H_R * (1.0 - er)) + beta_m_hi * (SPEC_H_M * (1.0 - em));
+    let sca_dn_lo = SPEC_BETA_R_LO * (SPEC_H_R * (1.0 - er)) + beta_ms_lo * (SPEC_H_M * (1.0 - em));
+    let sca_dn_hi = SPEC_BETA_R_HI * (SPEC_H_R * (1.0 - er)) + beta_ms_hi * (SPEC_H_M * (1.0 - em));
+    let p_dn_lo = (vec4(1.0) - exp(-2.0 * tau_dn_lo)) * (sca_dn_lo / max(tau_dn_lo, vec4(1e-6)));
+    let p_dn_hi = (vec4(1.0) - exp(-2.0 * tau_dn_hi)) * (sca_dn_hi / max(tau_dn_hi, vec4(1e-6)));
+
+    let f_lo = clamp(0.5 * (p_up_lo + p_dn_lo + exp(-2.0 * tau_dn_lo) * 0.10), vec4(0.0), vec4(0.85));
+    let f_hi = clamp(0.5 * (p_up_hi + p_dn_hi + exp(-2.0 * tau_dn_hi) * 0.10), vec4(0.0), vec4(0.85));
+
+    // When the sun dips near/below the horizon, upper stratospheric air above Earth's shadow
+    // still scatters down into lower twilight layers (producing natural blue-hour & afterglow).
+    var t_eff_lo = t_sun.lo;
+    var t_eff_hi = t_sun.hi;
+    if mu_s < 0.08 {
+        let r_sh = SPEC_R_EARTH / max(sqrt(max(1.0 - mu_s * mu_s, 1e-4)), 1e-4);
+        let h_lit = max(h + 10.0, r_sh - SPEC_R_EARTH + 3.0);
+        let t_up = spec_solar_transmittance(SPEC_R_EARTH + min(h_lit, 65.0), max(mu_s, -0.04), beta_m_lo, beta_m_hi);
+        let att = exp(-max(h_lit - h, 0.0) * (1.0 / 14.0)) * 0.55;
+        t_eff_lo = max(t_eff_lo, t_up.lo * att);
+        t_eff_hi = max(t_eff_hi, t_up.hi * att);
     }
-    let bg = max(exp(max(out_bg, vec3(0.0))) - vec3(1.0), vec3(0.0)) * 0.04;
-    let mie = max(exp(max(out_mie, vec3(0.0))) - vec3(1.0), vec3(0.0)) * 0.04;
-    return NeuralAtmoSample(bg, mie);
+
+    let inv_4pi = 1.0 / (2.0 * TAU);
+    return Spec8(
+        t_eff_lo * (f_lo / (vec4(1.0) - f_lo)) * inv_4pi,
+        t_eff_hi * (f_hi / (vec4(1.0) - f_hi)) * inv_4pi,
+    );
+}
+
+// Live 8-wavelength Spectral Hillaire spherical-shell atmospheric integrator:
+// real-time dynamic aerosols (humidity/rain), curved-ray sunset refraction, Chappuis ozone,
+// and exact CIE 1931 -> Rec.2020 spectral projection (zero LUT quantization).
+fn spectral_hillaire_eval(view_y: f32, light_y: f32, cosine: f32, steps: u32) -> SpectralAtmoSample {
+    // Match Photon's horizon stretch so golden-hour gradients rise gracefully above the horizon.
+    var mu = view_y;
+    if mu > 0.0 {
+        mu *= sqrt(sqrt(mu));
+    }
+    // Curved-ray atmospheric refraction near the horizon (~0.52 deg lift at sunset).
+    let ly_eff = min(1.0, light_y + 0.009 * exp(-max(light_y + 0.03, 0.0) * 16.0));
+
+    // Weather-reactive live Mie aerosols: crisp alpine sky in dry weather, richer haze in humid/wet air.
+    let hum = clamp(0.42 + 0.28 * sin(2.0 * weather_cycle() + 0.7) + 0.38 * frame.wetness, 0.0, 1.0);
+    let mie_mult = mix(0.78, 1.55, hum) * (1.0 + 0.35 * frame.rain);
+    let beta_m_lo = SPEC_BETA_M_LO * mie_mult;
+    let beta_m_hi = SPEC_BETA_M_HI * mie_mult;
+    let beta_ms_lo = beta_m_lo * SPEC_MIE_ALBEDO;
+    let beta_ms_hi = beta_m_hi * SPEC_MIE_ALBEDO;
+
+    let r0 = SPEC_R_EARTH + 0.1;
+    let dist = spec_ray_sphere_exit(r0, mu, SPEC_R_TOP);
+    if dist <= 0.0 {
+        return SpectralAtmoSample(vec3(0.0), vec3(0.0));
+    }
+
+    let sin_v = sqrt(max(1.0 - mu * mu, 0.0));
+    let sin_s = sqrt(max(1.0 - ly_eff * ly_eff, 0.0));
+    let cos_az = clamp((cosine - mu * ly_eff) / max(sin_v * sin_s, 1e-5), -1.0, 1.0);
+    let ray_phase = (3.0 / (8.0 * TAU)) * (1.0 + cosine * cosine);
+
+    var l_ray_lo = vec4(0.0);
+    var l_ray_hi = vec4(0.0);
+    var l_mie_lo = vec4(0.0);
+    var l_mie_hi = vec4(0.0);
+    var t_view_lo = vec4(1.0);
+    var t_view_hi = vec4(1.0);
+
+    let inv_steps = 1.0 / f32(steps);
+    var t_prev = 0.0;
+    for (var i = 1u; i <= steps; i += 1u) {
+        let u = f32(i) * inv_steps;
+        let t_cur = dist * (u * u);
+        let dt = t_cur - t_prev;
+        let tm = 0.5 * (t_prev + t_cur);
+        t_prev = t_cur;
+
+        let px = tm * sin_v;
+        let py = r0 + tm * mu;
+        let rp = sqrt(px * px + py * py);
+        let mu_s_loc = (px * (sin_s * cos_az) + py * ly_eff) / rp;
+
+        let d = spec_densities(rp - SPEC_R_EARTH);
+        let ext_lo = SPEC_BETA_R_LO * d.x + beta_m_lo * d.y + SPEC_BETA_O_LO * d.z;
+        let ext_hi = SPEC_BETA_R_HI * d.x + beta_m_hi * d.y + SPEC_BETA_O_HI * d.z;
+        let step_t_lo = exp(-ext_lo * dt);
+        let step_t_hi = exp(-ext_hi * dt);
+        let integ_lo = (vec4(1.0) - step_t_lo) / max(ext_lo, vec4(1e-7));
+        let integ_hi = (vec4(1.0) - step_t_hi) / max(ext_hi, vec4(1e-7));
+
+        let t_sun = spec_solar_transmittance(rp, mu_s_loc, beta_m_lo, beta_m_hi);
+        let psi = spec_hillaire_ms(rp, mu_s_loc, t_sun, beta_m_lo, beta_m_hi, beta_ms_lo, beta_ms_hi);
+
+        let w_lo = t_view_lo * integ_lo;
+        let w_hi = t_view_hi * integ_hi;
+        l_ray_lo += w_lo * (SPEC_BETA_R_LO * d.x * (t_sun.lo * ray_phase + psi.lo) + beta_ms_lo * d.y * psi.lo);
+        l_ray_hi += w_hi * (SPEC_BETA_R_HI * d.x * (t_sun.hi * ray_phase + psi.hi) + beta_ms_hi * d.y * psi.hi);
+        l_mie_lo += w_lo * (beta_ms_lo * d.y * t_sun.lo);
+        l_mie_hi += w_hi * (beta_ms_hi * d.y * t_sun.hi);
+
+        t_view_lo *= step_t_lo;
+        t_view_hi *= step_t_hi;
+    }
+
+    return SpectralAtmoSample(
+        spec8_to_rec2020(Spec8(l_ray_lo, l_ray_hi)),
+        spec8_to_rec2020(Spec8(l_mie_lo, l_mie_hi)),
+    );
 }
 
 fn fog_vapour_density(celsius: f32) -> f32 {
@@ -308,13 +318,12 @@ fn mie_phase(cosine: f32, g: f32) -> f32 {
     return mix(hg, draine, 0.28 + 0.14 * hum);
 }
 
-fn scattering_from_light(direction: vec3<f32>, light: vec3<f32>, g: f32, mie_scale: f32) -> vec3<f32> {
+fn scattering_from_light(direction: vec3<f32>, light: vec3<f32>, g: f32, mie_scale: f32, steps: u32) -> vec3<f32> {
     let mu = max(direction.y, mix(-0.009, 0.027, smoothstep(-0.05, 0.1, frame.sun_direction.y)));
     let cosine = clamp(dot(direction, light), -1.0, 1.0);
-    if neural_atmosphere {
-        let extent = sqrt(max((1.0 - mu * mu) * (1.0 - light.y * light.y), 0.0));
-        let az_cos = clamp((cosine - mu * light.y) / max(extent, 1e-4), -1.0, 1.0);
-        let spec = neural_atmosphere_eval(mu, light.y, cosine, az_cos);
+    if atmosphere_model == 0u {
+        let eff_steps = select(steps, min(steps, 12u), direction.y < -0.02);
+        let spec = spectral_hillaire_eval(mu, light.y, cosine, eff_steps);
         return spec.background + spec.aerosols * (mie_phase(cosine, g) * mie_scale);
     }
     let xyz = coordinates_for_scattering(cosine, mu, light.y);
@@ -333,11 +342,11 @@ fn sky_radiance(direction: vec3<f32>) -> vec3<f32> {
     var radiance = vec3(0.0);
     if solar_elevation > -0.35 {
         let solar_intensity = 7.0 * (1.0 + 6.0 * twilight) * smoothstep(-0.35, -0.22, solar_elevation);
-        radiance += scattering_from_light(direction, frame.sun_direction, 0.86, 0.2) * solar_intensity;
+        radiance += scattering_from_light(direction, frame.sun_direction, 0.86, 0.2, 20u) * solar_intensity;
     }
     let night = 1.0 - smoothstep(-0.10, 0.04, solar_elevation);
     if night > 0.0 && frame.moon_direction.y > -0.15 {
-        radiance += scattering_from_light(direction, frame.moon_direction, 0.82, 0.5)
+        radiance += scattering_from_light(direction, frame.moon_direction, 0.82, 0.5, 10u)
             * vec3(0.23, 0.32, 0.48) * (night * lunar_brightness());
     }
     let elev = max(direction.y, 0.0);

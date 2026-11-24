@@ -106,21 +106,21 @@ fn terrain_reflection_hit(position: vec3<f32>, normal: vec3<f32>, ray: vec3<f32>
 // reprojection and depth-validated bilinear history sampling.
 fn save_reflection_history(cell: vec2<i32>, uv: vec2<f32>, depth: f32, position: vec3<f32>, distance: f32) {
     if !terrain_reflections || frame.dimension != 0 || depth <= 0.0 || distance <= 0.02 {
-        textureStore(reflection_history, cell, vec4(0.0));
+        textureStore(reflection_history, cell, vec4<u32>(0u));
         return;
     }
     let scene_size = vec2<f32>(textureDimensions(scene_depth));
     let texel = clamp(vec2<i32>(uv * scene_size), vec2(0), vec2<i32>(scene_size) - 1);
     let surface = surface_at(texel);
     if !surface.present || surface_is_lava(u32(surface.data)) {
-        textureStore(reflection_history, cell, vec4(0.0));
+        textureStore(reflection_history, cell, vec4<u32>(0u));
         return;
     }
     let packed = u32(surface.data);
     let fog = vanilla_fog(position);
     let reflectance = surface_reflectance(packed);
     if fog >= 1.0 || max(reflectance.r, max(reflectance.g, reflectance.b)) <= 0.008 {
-        textureStore(reflection_history, cell, vec4(0.0));
+        textureStore(reflection_history, cell, vec4<u32>(0u));
         return;
     }
 
@@ -193,19 +193,20 @@ fn save_reflection_history(cell: vec2<i32>, uv: vec2<f32>, depth: f32, position:
             for (var tap = 0u; tap < 4u; tap += 1u) {
                 let off = vec2<i32>(i32(tap & 1u), i32(tap >> 1u));
                 let q = clamp(base + off, vec2(0), hist_size - 1);
-                let sample_val = textureLoad(reflection_history_previous, q, 0);
-                if sample_val.a > 0.0 {
-                    let depth_w = 1.0 - smoothstep(0.35 * tolerance, tolerance, abs(sample_val.a - expected));
+                let sample_val = unpack_u32_vec4(textureLoad(reflection_history_previous, q, 0));
+                if sample_val.a > 0.002 {
+                    let sample_dist = unpack_dist8(sample_val.a);
+                    let depth_w = 1.0 - smoothstep(0.35 * tolerance, tolerance, abs(sample_dist - expected));
                     if depth_w > 0.0 {
                         let axis = select(1.0 - frac, frac, off == vec2(1));
                         let w = axis.x * axis.y * depth_w;
-                        hist_tm += refl_reinhard(sample_val.rgb) * w;
+                        hist_tm += sample_val.rgb * w;
                         w_sum += w;
                     }
                 }
             }
             if w_sum > 0.05 {
-                let current_tm = refl_reinhard(current);
+                let current_tm = pack_hdr8(current);
                 let prev_tm = hist_tm / w_sum;
                 // ReBLUR-style hit-distance-aware perceptual clamping: sharp near hits clamp tightly
                 // so moving entities/camera pans never ghost, while rough/distant lobes integrate smoothly.
@@ -216,9 +217,9 @@ fn save_reflection_history(cell: vec2<i32>, uv: vec2<f32>, depth: f32, position:
                 let clamped_tm = clamp(prev_tm, current_tm - clamp_radius, current_tm + clamp_radius);
                 let base_keep = mix(0.84, 0.91, smoothstep(0.08, 0.40, roughness));
                 let keep = mix(base_keep, 0.52, motion_fade) * clamp(w_sum, 0.0, 1.0);
-                resolved = refl_reinhard_inv(mix(current_tm, clamped_tm, keep));
+                resolved = unpack_hdr8(mix(current_tm, clamped_tm, keep));
             }
         }
     }
-    textureStore(reflection_history, cell, vec4(max(resolved, vec3(0.0)), min(distance, 65504.0)));
+    textureStore(reflection_history, cell, pack_u32_vec4(vec4(pack_hdr8(resolved), pack_dist8(distance))));
 }

@@ -65,98 +65,197 @@ fn post(input: PostInput) -> vec4<f32> {
     // hardware bilinear fog fast-path against silhouette depth cancellation.
     let depth_grad = abs(dpdx(input.depth)) + abs(dpdy(input.depth));
     // Horizon draws the End backdrop separately from its ordinary sky stage (dimension 1 = End).
-    // Use direction-only unprojection (z=0.0005, w=0) so view-bobbing eye translation never swings the sky.
+    // Use translation-free infinity unprojection so view-bobbing eye translation never shifts the sky.
     if frame.dimension == 1 && input.depth <= 0.0 {
         let ndc = vec2(input.uv.x * 2.0 - 1.0, 1.0 - input.uv.y * 2.0);
-        let clip_far = frame.projection_inverse * vec4(ndc, 0.0005, 1.0);
-        let view_dir = clip_far.xyz / max(abs(clip_far.w), 1e-6);
-        let direction = normalize((frame.view_inverse * vec4(view_dir, 0.0)).xyz);
+        let direction = sky_world_ray(ndc);
         return vec4(end_sky(direction, input.color.rgb), 1.0);
     }
-    if input.depth <= 0.0 && !use_underwater_fog() {
-        return input.color;
+    let sky = input.depth <= 0.0;
+    var base_input = input.color;
+    // Composite full-resolution 1.0x screen-space clouds (cloud_screen_history) directly onto
+    // Overworld open-sky pixels (all the way down to ray.y = -1.0 when above CLOUD_BASE),
+    // preserving rain/snow/particles blended over sky.wgsl.
+    if sky && frame.dimension == 0 && frame.eye_in < 2u && volumetric_clouds && cloud_cover > 0.0 {
+        let sc_size = vec2<i32>(textureDimensions(cloud_screen_history));
+        let sc_px = clamp(vec2<i32>(input.pixel), vec2(0), sc_size - 1);
+        let sc_raw = unpack_u32_vec4(textureLoad(cloud_screen_history, sc_px, 0));
+        if sc_raw.a >= 0.01 {
+            let sc = vec4(unpack_hdr8(sc_raw.rgb), clamp((sc_raw.a - 0.02) * (1.0 / 0.98), 0.0, 1.0));
+            let ndc = vec2(input.uv.x * 2.0 - 1.0, 1.0 - input.uv.y * 2.0);
+            let ray = sky_world_ray(ndc);
+            let above_clouds = frame.camera_position.y >= CLOUD_BASE - 8.0;
+            if above_clouds || ray.y >= -0.05 {
+                let base_atmo = atmosphere(ray);
+                let aurora = aurora_volume(ray);
+                let atmo_all = base_atmo + aurora;
+                var celestial = vec3(0.0);
+                if sc.a > 0.001 && ray.y > -0.05 {
+                    celestial = sky_celestial(ray);
+                }
+                var sky_rainbow = vec3(0.0);
+                let map_max = vec2<i32>(i32(ENV_WIDTH) - 1, i32(ENV_HEIGHT) - 1);
+                if rainbows && frame.wetness > 0.0 && ray.y >= -0.072 {
+                    let cell = clamp(vec2<i32>(cloud_map_texel(ray)), vec2(0), map_max);
+                    let cloud_distance = textureLoad(cloud_aux, cell, 0).r;
+                    let visible_distance = mix(cloud_distance, 2600.0, smoothstep(0.90, 1.0, sc.a));
+                    sky_rainbow = rainbow_color(ray, visible_distance);
+                }
+                let flash = storm_flash();
+                var sheet_lightning = vec3(0.0);
+                if flash > 0.001 {
+                    let strike_align = pow(clamp(dot(ray, storm_flash_dir()), 0.0, 1.0), 6.0);
+                    sheet_lightning = vec3(0.62, 0.78, 1.15) * (flash * strike_align * (1.0 - sc.a) * 1.9);
+                }
+                let bg_sky = atmo_all + celestial;
+                var native_sky = bg_sky * sc.a + sc.rgb + sheet_lightning + sky_rainbow;
+
+                let sky_access = air_fog_sky_access();
+                // At/above cloud altitude, ground-level horizon air fog sits physically BEHIND
+                // foreground clouds (never painting a horizon stripe through opaque clouds).
+                let cloud_above_fog = smoothstep(CLOUD_BASE - 36.0, CLOUD_BASE - 8.0, frame.camera_position.y);
+                var haze = AirFog(vec3(0.0), vec3(1.0));
+                if fog_strength > 0.0 && sky_access > 0.0 {
+                    haze = raymarch_air_fog(ray, max(frame.render_distance, 32.0), 0.5, sky_access, true);
+                    let bg_hazed = bg_sky * haze.transmittance + haze.scattering;
+                    let cloud_front = bg_hazed * sc.a + sc.rgb + sheet_lightning + sky_rainbow;
+                    let fog_front = native_sky * haze.transmittance + haze.scattering;
+                    native_sky = mix(fog_front, cloud_front, cloud_above_fog);
+                }
+                var final_sky = native_sky;
+                // Only extract rain/snow streaks from input.color during active precipitation,
+                // clamping delta to prevent cubic-vs-bilinear cloud-edge mismatch from punching dark dots.
+                if frame.rain > 0.001 {
+                    var pano_cloud = vec3(0.0);
+                    var pano_a = 1.0;
+                    if ray.y >= -0.075 && !(above_clouds && ray.y <= -0.072) {
+                        let pano_raw = sample_environment(ray);
+                        let p_fade = select(0.0, 1.0 - smoothstep(-0.072, -0.032, ray.y), above_clouds);
+                        pano_cloud = max(pano_raw.rgb - base_atmo * pano_raw.a, vec3(0.0)) * (1.0 - p_fade);
+                        pano_a = mix(pano_raw.a, 1.0, p_fade);
+                    }
+                    let pano_cel = select(vec3(0.0), sky_celestial(ray), pano_a > 0.001 && ray.y > -0.05);
+                    let pano_bg = base_atmo + pano_cel;
+                    var pano_sky = pano_bg * pano_a + pano_cloud + sheet_lightning + sky_rainbow;
+                    if fog_strength > 0.0 && sky_access > 0.0 {
+                        let p_bg_hazed = pano_bg * haze.transmittance + haze.scattering;
+                        let p_cloud_front = p_bg_hazed * pano_a + pano_cloud + sheet_lightning + sky_rainbow;
+                        let p_fog_front = pano_sky * haze.transmittance + haze.scattering;
+                        pano_sky = mix(p_fog_front, p_cloud_front, cloud_above_fog);
+                    }
+                    let rain_delta = max(input.color.rgb - pano_sky, vec3(0.0));
+                    final_sky = native_sky + rain_delta;
+                }
+                base_input = vec4(final_sky, 1.0);
+            }
+        }
+    }
+    if sky && !use_underwater_fog() {
+        return base_input;
     }
     let world = fog_position(input.uv, input.depth);
     let ray_length = length(world);
-    let terrain = terrain_effects(input, world, ray_length);
+    var terrain = base_input;
+    if !sky {
+        terrain = terrain_effects(input, world, ray_length);
+    }
     if !use_volume_composite() {
         return terrain;
     }
     let ray = world / max(ray_length, 1e-6);
 
     let size = vec2<i32>(textureDimensions(fog_transmittance));
+    let size_f = vec2<f32>(size);
+    let inv_size = 1.0 / size_f;
     let distance = fog_distance(ray_length, input.depth);
-    let sky = input.depth <= 0.0;
-    let guide = select(distance, -1.0, sky);
-    let tolerance = max(0.3, 0.025 * distance);
+    let pos_half = input.uv * size_f - 0.5;
+    let corner = vec2<i32>(floor(pos_half));
+    let blend = fract(pos_half);
 
-    // Single-check hardware bilinear fast-path on continuous terrain/sky (2 fetches instead
-    // of 9 manual loads); falls back to 4-tap bilateral resolve only on geometric silhouettes.
+    // Single-check hardware bilinear fast-path validated directly against scene_depth at
+    // the half-resolution texel centers (avoids missing alpha on Rg11b10Ufloat targets).
     var rainbow = vec3(0.0);
     if !sky && frame.eye_in == 0u && distance > 250.0 {
         rainbow = rainbow_color(ray, distance);
     }
+    var tap_depths = array<f32, 4>(0.0, 0.0, 0.0, 0.0);
+    var all_match = sky || depth_grad < max(input.depth * 0.06, 1e-5);
+    for (var tap = 0u; tap < 4u; tap += 1u) {
+        let offset = vec2<i32>(i32(tap & 1u), i32(tap >> 1u));
+        let cell = clamp(corner + offset, vec2(0), size - 1);
+        let td = depth_at((vec2<f32>(cell) + 0.5) * inv_size);
+        tap_depths[tap] = td;
+        if (td <= 0.0) != sky || (!sky && abs(td - input.depth) > 0.08 * max(input.depth, 1e-8)) {
+            all_match = false;
+        }
+    }
+
     var color = vec3(0.0);
     var scattering = vec3(0.0);
     var total = 0.0;
     var best_scattering = vec3(0.0);
-    let bt = textureSampleLevel(fog_transmittance, linear_sampler, input.uv, 0.0);
-    let smooth_depth = sky || depth_grad < max(input.depth * 0.06, 1e-5);
-    let b_ok = smooth_depth && (bt.a < 0.0) == sky && (sky || abs(guide - bt.a) < 0.45 * tolerance);
-    if b_ok {
-        let bs = textureSampleLevel(fog_scattering, linear_sampler, input.uv, 0.0);
-        color = terrain.rgb * bt.rgb + bs.rgb + rainbow * bs.a;
-        best_scattering = bs.rgb;
+    var resolved_scatter = vec3(0.0);
+    var resolved_trans = vec3(1.0);
+    if all_match {
+        let bt = textureSampleLevel(fog_transmittance, linear_sampler, input.uv, 0.0).rgb;
+        let bs = textureSampleLevel(fog_scattering, linear_sampler, input.uv, 0.0).rgb;
+        let cloud_vis = clamp(dot(bt, vec3(0.333333)), 0.0, 1.0);
+        color = terrain.rgb * bt + bs + rainbow * cloud_vis;
+        best_scattering = bs;
+        resolved_scatter = bs;
+        resolved_trans = bt;
         total = -1.0;
     }
     if total == 0.0 {
-        let position = input.uv * vec2<f32>(size) - 0.5;
-        let corner = vec2<i32>(floor(position));
-        let blend = fract(position);
         var transmittance = vec3(0.0);
-        var cloud_transmission = 0.0;
         var best_diff = 1e30;
         var best_transmittance = vec3(1.0);
-        var best_cloud = 1.0;
         for (var tap = 0u; tap < 4u; tap += 1u) {
-            let offset = vec2<i32>(i32(tap & 1u), i32(tap >> 1u));
-            let cell = clamp(corner + offset, vec2(0), size - 1);
-            let sample_value = textureLoad(fog_transmittance, cell, 0);
-            let sample_sky = sample_value.a < 0.0;
-            if sample_sky == sky {
-                let diff = abs(guide - sample_value.a);
+            let td = tap_depths[tap];
+            if (td <= 0.0) == sky {
+                let offset = vec2<i32>(i32(tap & 1u), i32(tap >> 1u));
+                let diff = select(abs(td - input.depth) / max(input.depth, 1e-8), 0.0, sky);
                 let axis_weight = select(1.0 - blend, blend, offset == vec2(1));
-                let depth_weight = 1.0 - smoothstep(0.0, tolerance, diff);
+                let depth_weight = select(1.0 - smoothstep(0.0, 0.16, diff), 1.0, sky);
                 let weight = axis_weight.x * axis_weight.y * depth_weight;
                 let is_best = diff < best_diff;
                 if weight <= 0.0 && !is_best {
                     continue;
                 }
-                let volume = textureLoad(fog_scattering, cell, 0);
+                let cell = clamp(corner + offset, vec2(0), size - 1);
+                let sample_t = textureLoad(fog_transmittance, cell, 0).rgb;
+                let volume = textureLoad(fog_scattering, cell, 0).rgb;
                 if is_best {
                     best_diff = diff;
-                    best_transmittance = sample_value.rgb;
-                    best_scattering = volume.rgb;
-                    best_cloud = volume.a;
+                    best_transmittance = sample_t;
+                    best_scattering = volume;
                 }
                 if weight <= 0.0 {
                     continue;
                 }
-                transmittance += weight * sample_value.rgb;
-                scattering += weight * volume.rgb;
-                cloud_transmission += weight * volume.a;
+                transmittance += weight * sample_t;
+                scattering += weight * volume;
                 total += weight;
             }
         }
         if total > 0.001 {
-            color = (terrain.rgb * transmittance + scattering + rainbow * cloud_transmission) / total;
-        } else if best_diff < 1e29 {
-            color = terrain.rgb * best_transmittance + best_scattering + rainbow * best_cloud;
+            let norm_t = transmittance / total;
+            resolved_scatter = scattering / total;
+            resolved_trans = norm_t;
+            let cloud_vis = clamp(dot(norm_t, vec3(0.333333)), 0.0, 1.0);
+            color = terrain.rgb * norm_t + resolved_scatter + rainbow * cloud_vis;
+        } else if best_diff < 0.35 {
+            resolved_scatter = best_scattering;
+            resolved_trans = best_transmittance;
+            let cloud_vis = clamp(dot(best_transmittance, vec3(0.333333)), 0.0, 1.0);
+            color = terrain.rgb * best_transmittance + best_scattering + rainbow * cloud_vis;
         } else if use_underwater_fog() {
             let fog = raymarch_underwater(ray, distance, 0.5);
+            resolved_trans = fog.transmittance;
             color = terrain.rgb * fog.transmittance + fog.scattering;
-        } else if fog_strength > 0.0 && air_fog_sky_access() > 0.0 {
+        } else if !sky && fog_strength > 0.0 && air_fog_sky_access() > 0.0 {
             let fog = raymarch_air_fog(ray, distance, 0.5, air_fog_sky_access(), true);
+            resolved_trans = fog.transmittance;
             color = terrain.rgb * fog.transmittance + fog.scattering + rainbow;
         } else {
             color = terrain.rgb + rainbow;
@@ -167,28 +266,46 @@ fn post(input: PostInput) -> vec4<f32> {
         color += underwater_marine_snow_glow(ray, distance, shaft_hint);
     } else if !sky && frame.dimension == 0 && frame.eye_in == 0u
         && frame.blindness <= 0.0 && frame.darkness <= 0.0 {
-        // Physically based render-distance border dissolve: distant terrain/oceans
-        // meet the horizon-aligned sky dome seamlessly with identical atmospheric haze.
+        // Upstream Photon border fog (simple_fog.glsl + d4_deferred_shading.fsh):
+        // Uses cubic_length squircle matching Minecraft's chunk loading grid with exp2(-8 * r^8)
+        // falloff, tall-mountain preservation above the horizon, and horizon-clamped sky color.
         let sky_access = air_fog_sky_access();
         let end = min(max(frame.fog_render.y, 16.0), max(frame.render_distance, 32.0));
-        let cyl_ratio = clamp(length(world.xz) / end, 0.0, 1.0);
-        // Strictly 0.0 inside 84% of render distance so the sky/horizon never bleeds
-        // through foreground or midground terrain, then dissolves smoothly at the rim.
-        let t = smoothstep(0.84, 1.0, cyl_ratio);
-        let border = t * t * (3.0 - 2.0 * t)
-            * smoothstep(0.0, 0.14, 1.0 - max(-ray.y, 0.0));
+        let ax = abs(world.x);
+        let az = abs(world.z);
+        let cubic_xz = pow(ax * ax * ax + az * az * az, 1.0 / 3.0);
+        let r_ratio = cubic_xz / end;
+        let r2 = r_ratio * r_ratio;
+        let r4 = r2 * r2;
+        var border_vis = exp2(-8.0 * r4 * r4);
+        border_vis = mix(border_vis, 1.0, 0.75 * photon_dampen(clamp(ray.y * 5.0, 0.0, 1.0)));
+        border_vis *= clamp((world.y + end) * (1.0 / 16.0), 0.0, 1.0);
+        let border = 1.0 - clamp(border_vis, 0.0, 1.0);
         if border > 0.002 && sky_access > 0.001 {
-            let sky_ray = sky_dome_ray(ray);
-            let env = sample_environment(sky_ray);
-            let cel = select(vec3(0.0), sky_celestial(sky_ray), env.a > 0.001);
-            var sky_backdrop = env.rgb + env.a * cel;
+            let atmo_only = atmosphere(ray);
+            let horizon_dir = normalize(vec3(ray.x, min(ray.y, -0.1), ray.z));
+            let horizon_atmo = atmosphere(horizon_dir);
+            let sun_twilight = clamp((exp(-75.0 * (frame.sun_direction.y + 0.0496) * (frame.sun_direction.y + 0.0496)) - 0.1) * (1.0 / 0.9), 0.0, 1.0);
+            var horizon_factor = clamp(sun_twilight + select(0.0, 1.0, frame.rain > 0.01), 0.0, 1.0);
+            horizon_factor = max(horizon_factor, photon_dampen(clamp((0.15 - ray.y) * 10.0, 0.0, 1.0)));
+            let hf2 = horizon_factor * horizon_factor;
+            var border_fog_color = mix(atmo_only, horizon_atmo, hf2);
             if fog_strength > 0.0 {
-                let sky_haze = raymarch_air_fog(sky_ray, frame.far, 0.5, sky_access, true);
-                sky_backdrop = sky_backdrop * sky_haze.transmittance + sky_haze.scattering;
+                let sky_dist = max(frame.render_distance, 32.0);
+                let rim_haze = raymarch_air_fog(ray, sky_dist, 0.5, sky_access, true);
+                border_fog_color = border_fog_color * rim_haze.transmittance + rim_haze.scattering;
+            }
+            // When flying above clouds looking down at distant terrain, keep foreground clouds in front of the border.
+            let cloud_below = smoothstep(CLOUD_BASE - 8.0, CLOUD_BASE + 16.0, frame.camera_position.y)
+                * smoothstep(0.02, -0.08, ray.y);
+            if cloud_below > 0.001 {
+                let resolved_cloud_a = clamp(dot(resolved_trans, vec3(0.333333)), 0.0, 1.0);
+                let downward_backdrop = border_fog_color * resolved_cloud_a + resolved_scatter;
+                border_fog_color = mix(border_fog_color, downward_backdrop, cloud_below);
             }
             let cave = (1.0 - smoothstep(49.0, 63.0, frame.camera_position.y))
                 * (1.0 - smoothstep(0.03, 0.30, frame.eye_light_smooth.y));
-            color = mix(color, sky_backdrop * (1.0 - cave), border * sky_access);
+            color = mix(color, border_fog_color * (1.0 - cave), border * sky_access);
         }
     }
     return vec4(color, 1.0);

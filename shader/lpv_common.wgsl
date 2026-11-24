@@ -8,6 +8,8 @@ const LPV_Y: f32 = 32.0;
 const LPV_CELL: f32 = 2.0;
 const LPV_ATLAS_W: f32 = 512.0;
 const LPV_ATLAS_H: f32 = 256.0;
+const LPV_ATLAS_Y_OFFSET: i32 = 512;
+const WORLD_VOLUMES_H: f32 = 768.0;
 
 fn lpv_anchor(camera_pos: vec3<f32>) -> vec3<f32> {
     return floor(camera_pos * (1.0 / LPV_CELL));
@@ -16,7 +18,7 @@ fn lpv_anchor(camera_pos: vec3<f32>) -> vec3<f32> {
 fn lpv_voxel_to_pixel(v: vec3<i32>) -> vec2<i32> {
     let tx = (v.y & 7) * 64;
     let ty = (v.y >> 3) * 64;
-    return vec2(tx + v.x, ty + v.z);
+    return vec2(tx + v.x, LPV_ATLAS_Y_OFFSET + ty + v.z);
 }
 
 fn lpv_pixel_to_voxel(pixel: vec2<i32>) -> vec3<i32> {
@@ -29,9 +31,9 @@ fn lpv_pixel_to_voxel(pixel: vec2<i32>) -> vec3<i32> {
 // Fast 2-tap trilinear lookup into a 2D-sliced 3D LPV atlas (zero inter-slice bleed).
 fn lpv_sample_slice(volume: texture_2d<f32>, local_xz: vec2<f32>, slice_y: i32) -> vec3<f32> {
     let sy = clamp(slice_y, 0, 31);
-    let tile = vec2<f32>(f32((sy & 7) * 64), f32((sy >> 3) * 64));
+    let tile = vec2<f32>(f32((sy & 7) * 64), f32(LPV_ATLAS_Y_OFFSET + (sy >> 3) * 64));
     let clamped_xz = clamp(local_xz, vec2(0.5), vec2(LPV_XZ - 0.5));
-    let uv = (tile + clamped_xz) / vec2(LPV_ATLAS_W, LPV_ATLAS_H);
+    let uv = (tile + clamped_xz) / vec2(LPV_ATLAS_W, WORLD_VOLUMES_H);
     return max(textureSampleLevel(volume, scattering_atlas_sampler, uv, 0.0).rgb, vec3(0.0));
 }
 

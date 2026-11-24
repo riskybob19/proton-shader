@@ -22,6 +22,45 @@ fn photon_dampen(x: f32) -> f32 {
     return unit * (2.0 - unit);
 }
 
+// Smooth Reinhard-HDR and normalized-distance packing for rgba8unorm history resources
+// (preserves HDR range up to ~124x while halving render-size resource budget).
+fn pack_hdr8(rgb: vec3<f32>) -> vec3<f32> {
+    let c = max(rgb, vec3(0.0));
+    return c / (c + vec3(1.0));
+}
+
+fn unpack_hdr8(rgb: vec3<f32>) -> vec3<f32> {
+    let c = clamp(rgb, vec3(0.0), vec3(0.992));
+    return c / (vec3(1.0) - c);
+}
+
+fn pack_dist8(d: f32) -> f32 {
+    return clamp(d / (d + 48.0), 0.004, 0.996);
+}
+
+fn unpack_dist8(a: f32) -> f32 {
+    let c = clamp(a, 0.0, 0.996);
+    return 48.0 * c / max(1.0 - c, 1e-3);
+}
+
+fn pack_u32_vec4(v: vec4<f32>) -> vec4<u32> {
+    return vec4<u32>(pack4x8unorm(clamp(v, vec4(0.0), vec4(1.0))), 0u, 0u, 0u);
+}
+
+fn unpack_u32_vec4(raw: vec4<u32>) -> vec4<f32> {
+    return unpack4x8unorm(raw.x);
+}
+
+// Camera-rotation-locked, translation-free world ray for sky & clouds:
+// Taking the difference between two unprojected depths cancels 100% of bobView
+// eye translation while keeping the exact same camera rotation as terrain.
+fn sky_world_ray(ndc: vec2<f32>) -> vec3<f32> {
+    let p_near = frame.projection_inverse * vec4(ndc, 0.5, 1.0);
+    let p_far = frame.projection_inverse * vec4(ndc, 0.01, 1.0);
+    let view_dir = p_far.xyz / p_far.w - p_near.xyz / p_near.w;
+    return normalize((frame.view_inverse * vec4(view_dir, 0.0)).xyz);
+}
+
 fn photon_phase(cosine: f32, anisotropy: f32) -> f32 {
     let g2 = anisotropy * anisotropy;
     let denominator = max(1.0 + g2 - 2.0 * anisotropy * cosine, 1e-5);
@@ -113,31 +152,11 @@ override water_caustics: bool = true;
 override biome_water_tint: bool = true;
 override ssilvb_gi: bool = true;
 override gi_rsm_bounce: bool = true;
+override blocklight_mode: u32 = 2u;
 
 fn use_underwater_fog() -> bool {
     return underwater_fog && frame.dimension == 0 && frame.eye_in == 1u
         && frame.blindness <= 0.0 && frame.darkness <= 0.0;
-}
-
-// Physically based finite-render-distance horizon dip angle sin(theta_h):
-// On a flat world clipped at horizontal radius R = render_distance, an observer at
-// height h above sea level sees the horizon dip by -h / sqrt(R^2 + h^2).
-// Smoothly approaches 0 (flat infinite horizon) as R -> infinity or h -> 0.
-fn world_horizon_y() -> f32 {
-    let h = max(frame.camera_position.y - 63.0, 0.0);
-    let r = max(frame.render_distance, 32.0);
-    return -h * inverseSqrt(r * r + h * h);
-}
-
-// Map a world-space view ray onto the physical horizon-aligned sky dome so the
-// visible render-distance horizon maps to y = 0.0 while zenith stays at y = +1.0.
-fn sky_dome_ray(ray: vec3<f32>) -> vec3<f32> {
-    let hy = world_horizon_y();
-    let y_shifted = clamp((ray.y - hy) / max(1.0 - hy, 0.2), -1.0, 1.0);
-    let xz_len = length(ray.xz);
-    let new_xz = sqrt(max(1.0 - y_shifted * y_shifted, 0.0));
-    let xz = select(vec2(new_xz, 0.0), ray.xz * (new_xz / xz_len), xz_len > 1e-5);
-    return vec3(xz.x, y_shifted, xz.y);
 }
 
 override aurora_mode: u32 = 1u;

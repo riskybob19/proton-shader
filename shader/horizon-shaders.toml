@@ -1,7 +1,7 @@
 schema = 1
 id = "photon_prototype"
 name = "Proton"
-version = "1.2.18"
+version = "1.4.0"
 api = "0.2"
 description = "Proton — a high-performance native Horizon shader with temporal hybrid GI, 3D colored LPV, Decima-inspired distant shadows, volumetric clouds & god rays, neural foliage/water optics, and RDR2 filmic grading."
 authors = ["Based on Photon by SixthSurge"]
@@ -22,12 +22,12 @@ files = ["atmosphere_read.wgsl", "clouds.wgsl", "environment.wgsl", "celestial.w
 
 [material]
 file = "material.wgsl"
-reads = ["sky_lighting", "cloud_environment_map", "cloud_aux", "taa_history_previous", "colored_light_volume_previous", "terrain_heightfield_previous"]
+reads = ["sky_lighting", "cloud_environment_map", "cloud_aux", "taa_history_previous", "world_volumes_previous"]
 files = ["atmosphere_read.wgsl", "skylight_mapping.wgsl", "lpv_common.wgsl", "heightfield_common.wgsl", "clouds.wgsl", "shadow_transmission.wgsl", "world_lighting.wgsl", "conductors.wgsl", "surface_data.wgsl", "wet_surfaces.wgsl", "environment.wgsl", "environment_read.wgsl", "cloud_shadow_read.wgsl", "reflection_options.wgsl", "reflection_history_read.wgsl", "water_options.wgsl", "water.wgsl", "translucent.wgsl", "celestial.wgsl", "shadow_projection.wgsl", "pack_shadow_read.wgsl"]
 
 [entity]
 file = "entity.wgsl"
-reads = ["sky_lighting", "cloud_aux", "colored_light_volume_previous"]
+reads = ["sky_lighting", "cloud_aux", "world_volumes_previous"]
 files = ["atmosphere_read.wgsl", "skylight_mapping.wgsl", "lpv_common.wgsl", "clouds.wgsl", "shadow_transmission.wgsl", "world_lighting.wgsl", "environment.wgsl", "cloud_shadow_read.wgsl", "shadow_projection.wgsl", "pack_shadow_read.wgsl"]
 
 [vertex]
@@ -241,18 +241,18 @@ keep = "view"
 [[resource]]
 name = "cloud_environment_map"
 format = "rgba16float"
-size = [1536, 384]
+size = [768, 768]
 keep = "view"
 
 [[resource]]
 name = "cloud_aux"
 format = "rgba16float"
-size = [1536, 480]
+size = [1024, 832]
 keep = "view"
 
 [[resource]]
 name = "reflection_history"
-format = "rgba16float"
+format = "r32uint"
 scale = 0.5
 keep = "view"
 
@@ -263,21 +263,21 @@ scale = 1.0
 keep = "view"
 
 [[resource]]
-name = "terrain_heightfield"
+name = "world_volumes"
 format = "rgba16float"
-size = [512, 512]
+size = [512, 768]
 keep = "view"
 
 [[resource]]
 name = "gi_history"
-format = "rgba16float"
+format = "r32uint"
 scale = 0.5
 keep = "view"
 
 [[resource]]
-name = "colored_light_volume"
-format = "rgba16float"
-size = [512, 256]
+name = "cloud_screen_history"
+format = "r32uint"
+scale = 1.0
 keep = "view"
 
 [[before_world]]
@@ -290,7 +290,7 @@ writes = ["sky_lighting"]
 [[before_world]]
 file = "environment_compute.wgsl"
 files = ["atmosphere_read.wgsl", "clouds.wgsl", "cloud_volume.wgsl", "environment.wgsl", "celestial.wgsl", "shadow_projection.wgsl"]
-dispatch = [1536, 480, 1]
+dispatch = [1024, 832, 1]
 workgroup = [8, 8, 1]
 reads = ["sky_lighting", "cloud_aux_previous", "cloud_environment_map_previous"]
 writes = ["cloud_environment_map", "cloud_aux"]
@@ -309,8 +309,8 @@ name = "Decima scrolled world-space terrain heightfield cache"
 compute = true
 dispatch = [512, 512, 1]
 workgroup = [8, 8, 1]
-reads = ["terrain_heightfield_previous", "cloud_aux"]
-writes = ["terrain_heightfield"]
+reads = ["world_volumes_previous", "cloud_aux"]
+writes = ["world_volumes"]
 files = ["environment.wgsl", "heightfield_common.wgsl", "shadow_projection.wgsl", "pack_shadow_read.wgsl"]
 
 [[post]]
@@ -325,8 +325,18 @@ file = "contact_ao.wgsl"
 name = "Half-resolution GTAO and screen-space shadows"
 scale = 0.5
 output = "contact_visibility"
-reads = ["cloud_aux", "terrain_heightfield"]
+reads = ["cloud_aux", "world_volumes"]
 files = ["surface_data.wgsl", "environment.wgsl", "skylight_mapping.wgsl", "heightfield_common.wgsl", "shadow_projection.wgsl", "pack_shadow_read.wgsl"]
+
+[[post]]
+file = "lpv_compute.wgsl"
+name = "3D scrolled 26-neighbor L2 colored light propagation volume (64x32x64)"
+compute = true
+dispatch = [512, 256, 1]
+workgroup = [8, 8, 1]
+reads = ["world_volumes_previous", "taa_history_previous"]
+writes = ["world_volumes"]
+files = ["surface_data.wgsl", "lpv_common.wgsl"]
 
 [[post]]
 file = "ssilvb_gi.wgsl"
@@ -338,35 +348,19 @@ files = ["surface_data.wgsl", "atmosphere_read.wgsl", "skylight_mapping.wgsl", "
 
 [[post]]
 file = "gi_denoise_1.wgsl"
-name = "Half-resolution voxel-strict A-Trous GI denoise pass 1"
-scale = 0.5
-output = "indirect_gi_a"
-files = ["surface_data.wgsl", "gi_denoise_common.wgsl"]
-
-[[post]]
-file = "gi_denoise_2.wgsl"
-name = "Half-resolution voxel-strict A-Trous GI denoise pass 2"
+name = "Half-resolution voxel-strict A-Trous GI denoise"
 scale = 0.5
 output = "indirect_gi"
 files = ["surface_data.wgsl", "gi_denoise_common.wgsl"]
 
 [[post]]
 file = "gi_temporal_compute.wgsl"
-name = "Half-resolution temporal GI and distant shadow accumulation"
+name = "Half-resolution temporal GI, ReSTIR emissive DI, and shadow accumulation"
 compute = true
 dispatch = "pixels"
 workgroup = [8, 8, 1]
-reads = ["gi_history_previous"]
+reads = ["gi_history_previous", "world_volumes"]
 writes = ["gi_history"]
-
-[[post]]
-file = "lpv_compute.wgsl"
-name = "3D scrolled colored light propagation volume (64x32x64)"
-compute = true
-dispatch = [512, 256, 1]
-workgroup = [8, 8, 1]
-reads = ["colored_light_volume_previous", "taa_history_previous"]
-writes = ["colored_light_volume"]
 files = ["surface_data.wgsl", "lpv_common.wgsl"]
 
 [[post]]
@@ -375,7 +369,7 @@ name = "Half-resolution reflection TAA"
 compute = true
 dispatch = "pixels"
 workgroup = [8, 8, 1]
-reads = ["sky_lighting", "cloud_aux", "cloud_environment_map", "reflection_history_previous", "taa_history_previous", "terrain_heightfield_previous"]
+reads = ["sky_lighting", "cloud_aux", "cloud_environment_map", "reflection_history_previous", "taa_history_previous", "world_volumes_previous"]
 writes = ["reflection_history"]
 files = ["atmosphere_read.wgsl", "heightfield_common.wgsl", "shadow_transmission.wgsl", "clouds.wgsl", "cloud_volume.wgsl", "air_fog_common.wgsl", "air_fog.wgsl", "underwater_fog.wgsl", "environment.wgsl", "environment_read.wgsl", "cloud_shadow_read.wgsl", "rainbow.wgsl", "surface_data.wgsl", "reflection_options.wgsl", "reflection_history_read.wgsl", "rt_reflection_common.wgsl", "reflection_history_write.wgsl", "shadow_projection.wgsl", "pack_shadow_read.wgsl"]
 
@@ -384,7 +378,7 @@ file = "fog_scattering.wgsl"
 name = "Half-resolution volumetric fog and terrain clouds"
 scale = 0.5
 output = "fog_scattering"
-reads = ["sky_lighting", "cloud_aux", "cloud_environment_map", "colored_light_volume_previous"]
+reads = ["sky_lighting", "cloud_aux", "cloud_environment_map", "world_volumes_previous"]
 files = ["atmosphere_read.wgsl", "lpv_common.wgsl", "shadow_transmission.wgsl", "clouds.wgsl", "cloud_volume.wgsl", "air_fog_common.wgsl", "air_fog.wgsl", "underwater_fog.wgsl", "environment.wgsl", "environment_read.wgsl", "cloud_shadow_read.wgsl", "rainbow.wgsl", "shadow_projection.wgsl", "pack_shadow_read.wgsl"]
 
 [[post]]
@@ -396,10 +390,20 @@ reads = ["sky_lighting", "cloud_aux"]
 files = ["atmosphere_read.wgsl", "shadow_transmission.wgsl", "clouds.wgsl", "cloud_volume.wgsl", "air_fog_common.wgsl", "air_fog.wgsl", "underwater_fog.wgsl", "environment.wgsl", "cloud_shadow_read.wgsl", "rainbow.wgsl", "shadow_projection.wgsl", "pack_shadow_read.wgsl"]
 
 [[post]]
+file = "cloud_screen_compute.wgsl"
+name = "Full-resolution 1.0x screen-space Nubis3 volumetric clouds"
+compute = true
+dispatch = "pixels"
+workgroup = [8, 8, 1]
+reads = ["sky_lighting", "cloud_aux", "cloud_environment_map", "cloud_screen_history_previous"]
+writes = ["cloud_screen_history"]
+files = ["atmosphere_read.wgsl", "clouds.wgsl", "cloud_volume.wgsl", "environment.wgsl", "environment_read.wgsl", "celestial.wgsl", "shadow_projection.wgsl"]
+
+[[post]]
 file = "composite.wgsl"
 name = "Terrain effects and depth-aware volume resolve"
 output = "taa_current"
-reads = ["sky_lighting", "cloud_aux", "cloud_environment_map", "reflection_history", "gi_history"]
+reads = ["sky_lighting", "cloud_aux", "cloud_environment_map", "cloud_screen_history", "reflection_history", "gi_history"]
 files = ["atmosphere_read.wgsl", "shadow_transmission.wgsl", "clouds.wgsl", "cloud_volume.wgsl", "air_fog_common.wgsl", "air_fog.wgsl", "underwater_fog.wgsl", "environment.wgsl", "cloud_shadow_read.wgsl", "rainbow.wgsl", "celestial.wgsl", "surface_data.wgsl", "skylight_mapping.wgsl", "environment_read.wgsl", "reflection_options.wgsl", "terrain_effects.wgsl", "shadow_projection.wgsl", "pack_shadow_read.wgsl"]
 
 [[post]]
@@ -433,7 +437,7 @@ files = ["antialias.wgsl"]
 [[post]]
 file = "bloom_combine.wgsl"
 name = "Temporal resolve, CAS sharpening, auto-exposure, and bloomy fog composite"
-reads = ["taa_history", "sky_lighting"]
+reads = ["taa_history", "sky_lighting", "cloud_screen_history"]
 
 [tonemap]
 file = "tonemap.wgsl"
@@ -787,10 +791,11 @@ type = "bool"
 default = true
 
 [[options]]
-id = "neural_atmosphere"
-name = "Neural spectral atmosphere"
-type = "bool"
-default = true
+id = "atmosphere_model"
+name = "Atmosphere model"
+type = "choice"
+values = ["Spectral Hillaire (8-Band)", "Bruneton LUT (Classic)"]
+default = "Spectral Hillaire (8-Band)"
 
 [[options]]
 id = "heat_distortion"
@@ -815,6 +820,13 @@ id = "colored_lpv"
 name = "3D colored blocklight (LPV)"
 type = "bool"
 default = true
+
+[[options]]
+id = "blocklight_mode"
+name = "Blocklight propagation mode"
+type = "choice"
+values = ["26-Neighbor L2 LPV", "Hardware RT ReSTIR DI", "Hybrid (L2 LPV + RT ReSTIR)"]
+default = "Hybrid (L2 LPV + RT ReSTIR)"
 
 [[options]]
 id = "labpbr_pom"
@@ -850,7 +862,7 @@ items = ["color_grading", "exposure", "auto_exposure", "color_saturation", "bloo
 [[pages]]
 id = "lighting"
 name = "Lighting and shadows"
-items = ["shadows", "classic_shadow_map", "soft_shadows", "cached_distant_shadows", "colored_lpv", "contact_ao", "neural_gi", "ssilvb_gi", "gi_rsm_bounce", "directional_skylight", "entity_lighting", "tree_scattering", "neural_sss"]
+items = ["shadows", "classic_shadow_map", "soft_shadows", "cached_distant_shadows", "colored_lpv", "blocklight_mode", "contact_ao", "neural_gi", "ssilvb_gi", "gi_rsm_bounce", "directional_skylight", "entity_lighting", "tree_scattering", "neural_sss"]
 
 [[pages]]
 id = "water"
@@ -870,4 +882,4 @@ items = ["volumetric_clouds", "neural_clouds", "cloud_cover", "cloud_history", "
 [[pages]]
 id = "sky_weather"
 name = "Sky and weather"
-items = ["neural_atmosphere", "heat_distortion", "rain_opacity", "snow_opacity", "rainbows", "aurora_mode", "galaxy_enabled", "end_sun"]
+items = ["atmosphere_model", "heat_distortion", "rain_opacity", "snow_opacity", "rainbows", "aurora_mode", "galaxy_enabled", "end_sun"]

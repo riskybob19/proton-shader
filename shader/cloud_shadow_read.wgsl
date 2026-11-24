@@ -1,6 +1,6 @@
 fn cloud_ground_map(uv: vec2<f32>) -> vec2<f32> {
     let cell = vec2(0.5) + uv * vec2(CLOUD_MAP_WIDTH - 1.0, CLOUD_MAP_HEIGHT - 1.0)
-        + vec2(0.0, ENV_HEIGHT);
+        + CLOUD_MAP_ORIGIN;
     return textureSampleLevel(cloud_aux, scattering_atlas_sampler,
         cell / vec2<f32>(textureDimensions(cloud_aux)), 0.0).rg;
 }

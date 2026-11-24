@@ -168,7 +168,7 @@ fn physical_sun_halo(uv: vec2<f32>, aspect: f32) -> vec3<f32> {
     if sun_lens_halo <= 0.001 || frame.dimension != 0 || frame.eye_in != 0u || frame.sun_direction.y < -0.02 {
         return vec3(0.0);
     }
-    let clip = frame.projection * frame.view * vec4(frame.sun_direction * 1000.0, 1.0);
+    let clip = frame.projection * frame.view * vec4(frame.sun_direction, 0.0);
     if clip.w <= 0.0 {
         return vec3(0.0);
     }
@@ -177,7 +177,9 @@ fn physical_sun_halo(uv: vec2<f32>, aspect: f32) -> vec3<f32> {
     if any(sun_uv < vec2(-0.25)) || any(sun_uv > vec2(1.25)) {
         return vec3(0.0);
     }
-    // 5-tap visibility probe around the solar disk (checks both geometry & cloud transmittance).
+    // 5-tap visibility probe around the solar disk (checks terrain depth, exact 1080p
+    // cloud transmittance, and high solar-disk luminance so opaque clouds never trigger corona).
+    let sc_size = vec2<i32>(textureDimensions(cloud_screen_history));
     let tap_r = vec2(0.007, 0.007 * aspect);
     var sun_vis = 0.0;
     var sun_col = vec3(0.0);
@@ -194,9 +196,12 @@ fn physical_sun_halo(uv: vec2<f32>, aspect: f32) -> vec3<f32> {
         let p_uv = clamp(sun_uv + off, vec2(0.002), vec2(0.998));
         let d = depth_at(p_uv);
         if d <= 0.0 {
+            let sc_px = clamp(vec2<i32>(p_uv * vec2<f32>(sc_size)), vec2(0), sc_size - 1);
+            let sc_raw = unpack_u32_vec4(textureLoad(cloud_screen_history, sc_px, 0));
+            let cloud_vis = select(1.0, clamp((sc_raw.a - 0.02) * (1.0 / 0.98), 0.0, 1.0), sc_raw.a >= 0.01);
             let c = max(textureSampleLevel(taa_history, linear_sampler, p_uv, 0.0).rgb, vec3(0.0));
             let l = dot(c, frame.luminance);
-            let w = smoothstep(0.55, 2.2, l);
+            let w = smoothstep(1.8, 5.5, l) * cloud_vis;
             sun_vis += w;
             sun_col += c * w;
         }
@@ -293,8 +298,9 @@ fn post(input: PostInput) -> vec4<f32> {
             // alpha from bleeding across silhouette edges and creating dark-scene halos).
             let fog_size = vec2<i32>(textureDimensions(fog_transmittance));
             let fog_cell = clamp(pixel / 2, vec2(0), fog_size - 1);
-            let fog_sample = textureLoad(fog_transmittance, fog_cell, 0);
-            if fog_sample.a > 0.0 {
+            let fog_uv = (vec2<f32>(fog_cell) + 0.5) / vec2<f32>(fog_size);
+            if depth_at(fog_uv) > 0.0 {
+                let fog_sample = textureLoad(fog_transmittance, fog_cell, 0);
                 let fog_opacity = clamp(1.0 - dot(fog_sample.rgb, vec3(0.333333)), 0.0, 1.0);
                 let day_mask = smoothstep(-0.04, 0.18, frame.sun_direction.y);
                 let luma_guard = smoothstep(0.015, 0.14, dot(resolved, frame.luminance));

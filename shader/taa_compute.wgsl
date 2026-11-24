@@ -133,9 +133,12 @@ fn taa_resolve(pixel: vec2<i32>, local_xy: vec2<i32>, size: vec2<i32>, uv: vec2<
         return current;
     }
 
-    // Closest-depth velocity dilation for crisp moving edges.
-    let closest = taa_closest_depth(pixel, local_xy, size, uv, depth);
-    let sky = closest.z <= 0.0;
+    // Closest-depth velocity dilation for crisp moving terrain silhouettes.
+    // Keep true sky pixels (depth <= 0.0) on their own sky velocity so nearby trees,
+    // leaves, or mountains never drag dark foreground history across the blue sky.
+    let center_sky = depth <= 0.0;
+    let closest = select(taa_closest_depth(pixel, local_xy, size, uv, depth), vec3(uv, depth), center_sky);
+    let sky = center_sky || closest.z <= 0.0;
     let same_pixel = all(closest.xy == uv) && !sky;
     var pos = center_pos;
     if !same_pixel {
@@ -154,17 +157,36 @@ fn taa_resolve(pixel: vec2<i32>, local_xy: vec2<i32>, size: vec2<i32>, uv: vec2<
     }
 
     // Depth disocclusion check against stored history distance.
-    // On a stationary or slowly-moving camera, a depth jump on a silhouette pixel is
-    // caused by sub-pixel TAA vertex jitter (NOT disocclusion): keep accumulating so
-    // distant ledges and shorelines antialias cleanly instead of strobing every frame.
+    // On sky pixels, any previous foreground/terrain sample in the 2x2 reprojection
+    // footprint is an immediate disocclusion (even when motion_px == 0 during pure
+    // translation/flying), completely eliminating foreground ghosting on blue sky.
     let res = vec2<f32>(size);
     let motion_px = length(velocity * res);
     let expected = length(old_pos);
     let nearest = clamp(vec2<i32>(prev_uv * res), vec2(0), size - 1);
     let last_depth = textureLoad(taa_history_previous, nearest, 0).a;
+    if sky {
+        if last_depth >= 0.0 {
+            return current;
+        }
+        // During fast camera panning or flight, skip TAA history completely on sky pixels:
+        // cloud_environment_map already accumulates in rotation-invariant world panorama
+        // space, so dropping TAA history here eliminates sky/cloud panning ghosts cleanly.
+        if motion_px >= 2.5 || length(frame.camera_motion) >= 0.18 {
+            return current;
+        }
+        let p0 = clamp(vec2<i32>(floor(prev_uv * res - 0.5)), vec2(0), size - 2);
+        let d00 = textureLoad(taa_history_previous, p0, 0).a;
+        let d10 = textureLoad(taa_history_previous, p0 + vec2(1, 0), 0).a;
+        let d01 = textureLoad(taa_history_previous, p0 + vec2(0, 1), 0).a;
+        let d11 = textureLoad(taa_history_previous, p0 + vec2(1, 1), 0).a;
+        if d00 >= 0.0 || d10 >= 0.0 || d01 >= 0.0 || d11 >= 0.0 {
+            return current;
+        }
+    }
     let depth_ok = select(
         last_depth > 0.0 && abs(last_depth - expected) < max(0.35, 0.08 * expected),
-        last_depth < 0.0,
+        true,
         sky,
     );
     let disocc_keep = select(1.0 - smoothstep(0.25, 1.25, motion_px), 1.0, depth_ok);
@@ -174,10 +196,11 @@ fn taa_resolve(pixel: vec2<i32>, local_xy: vec2<i32>, size: vec2<i32>, uv: vec2<
         return spatial_aa_resolve(pixel, size, uv, current);
     }
 
-    // 5-tap Catmull-Rom reprojection (sharp) with 1-tap bilinear fast-path when
-    // stationary (sub-pixel shift < 0.08 px -> mathematically identical to Catmull-Rom).
+    // 5-tap Catmull-Rom reprojection (sharp) on moving terrain; use 1-tap bilinear on
+    // stationary pixels and validated sky pixels (whose 2x2 footprint is proven 100% sky,
+    // avoiding 4x4 Catmull-Rom ringing/bleed from nearby trees or mountains).
     var history: vec3<f32>;
-    if motion_px < 0.08 {
+    if sky || motion_px < 0.08 {
         history = max(textureSampleLevel(taa_history_previous, linear_sampler, prev_uv, 0.0).rgb, vec3(0.0));
     } else {
         history = catmull_rom_taa_history(prev_uv, size);
@@ -268,7 +291,12 @@ fn taa_resolve(pixel: vec2<i32>, local_xy: vec2<i32>, size: vec2<i32>, uv: vec2<
     let offcenter = mix(subpix_clarity * 0.25 + 0.75, subpix_clarity * 0.42 + 0.58, motion_tighten);
     let base_alpha = mix(0.14, 0.08, distance_factor);
     let motion_alpha = mix(base_alpha, 0.52, smoothstep(0.8, 10.0, motion_px));
-    let keep = (1.0 - motion_alpha) * offcenter * disocc_keep;
+    var keep = (1.0 - motion_alpha) * offcenter * disocc_keep;
+    if sky {
+        let sky_move = clamp(smoothstep(0.015, 0.18, length(frame.camera_motion))
+            + smoothstep(0.35, 2.5, motion_px), 0.0, 1.0);
+        keep = min(keep, mix(0.62, 0.0, sky_move));
+    }
 
     var cur_for_blend = current_tm;
     if spatial_aa && (disocc_keep < 0.70 || motion_px > 2.5) {

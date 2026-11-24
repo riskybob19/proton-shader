@@ -290,10 +290,11 @@ fn surface_blocklight(position: vec3<f32>, light_levels: vec2<f32>, ao: f32, dir
     let b3 = b2 * block;
     let b4 = b2 * b2;
     let b8 = b4 * b4;
+    let rt_restir_active = blocklight_mode == 1u && frame.has_ray_tracing != 0u && frame.dimension == 0;
     // Physical inverse-square decay curve without a high low-end linear shelf
     // (eliminates Minecraft's jagged level-1..2 Manhattan diamond contours on terrain).
-    let outer_fade = smoothstep(0.02, 0.24, block);
-    var falloff = (b8 + 0.36 * b4 + 0.22 * b3 + 0.05 * b2) * outer_fade;
+    let outer_fade = select(smoothstep(0.04, 0.26, block), smoothstep(0.28, 0.64, block), rt_restir_active);
+    var falloff = (b8 + 0.36 * b4 + 0.22 * b3 + 0.04 * b2) * outer_fade;
     falloff *= mix(ao * ao, 1.0, clamp(falloff, 0.0, 1.0));
     if frame.darkness > 0.0 {
         let pulse = ao * photon_dampen(abs(cos(2.0 * frame.time))) * 0.67 + 0.2;
@@ -306,18 +307,21 @@ fn surface_blocklight(position: vec3<f32>, light_levels: vec2<f32>, ao: f32, dir
     let base_luma = dot(WARM_BLOCKLIGHT, frame.luminance);
     var color = WARM_BLOCKLIGHT;
     var lpv_boost = vec3(0.0);
-    if colored_lpv {
-        // 100% GPU-driven 128x64x128 scrolled colored light propagation volume (0.008 ms,
-        // zero CPU chunk-boundary flood-fill stutters, +/-64m XZ & +/-32m Y reach).
-        let lpv = lpv_sample_trilinear(colored_light_volume_previous,
+    let use_lpv_bounce = colored_lpv && !rt_restir_active;
+    if use_lpv_bounce {
+        // 100% GPU-driven 128x64x128 26-neighbor spherical L2 LPV with solid-wall blockers.
+        let lpv = lpv_sample_trilinear(world_volumes_previous,
             frame.camera_position + position, lpv_anchor(frame.camera_position));
         let lpv_max = max(lpv.r, max(lpv.g, lpv.b));
-        if lpv_max > 0.015 {
+        if lpv_max > 0.012 {
             let lpv_unit = lpv / lpv_max;
             let lpv_tint = lpv_unit * clamp(base_luma / max(dot(lpv_unit, frame.luminance), 0.18), 0.72, 1.38);
-            let blend_w = smoothstep(0.015, 0.24, lpv_max);
-            color = mix(color, lpv_tint, blend_w * 0.90);
-            lpv_boost = lpv * (0.12 * ao * directional * smoothstep(0.05, 0.5, block));
+            let blend_w = smoothstep(0.012, 0.22, lpv_max);
+            color = mix(color, lpv_tint, blend_w * 0.92);
+            // Smooth spherical outer glow driven by L2 LPV so villages & open caves stay round, never diamond.
+            let spherical_gate = smoothstep(0.02, 0.45, block + lpv_max * 0.45);
+            let boost_scale = select(0.14, 0.26, blocklight_mode == 0u);
+            lpv_boost = lpv * (boost_scale * ao * directional * spherical_gate);
         }
     }
     return color * (6.0 * falloff * directional) + lpv_boost;

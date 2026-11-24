@@ -95,15 +95,16 @@ fn neural_multibounce_ao(vis: f32, rho: vec3<f32>, direct_frac: f32, normal_y: f
 // half-res 3-layer Hybrid Voxel GI buffer (gi_history.rgb paired with indirect_gi.a depth guide).
 fn sample_ssilvb_gi(uv: vec2<f32>, distance: f32, normal: vec3<f32>) -> vec3<f32> {
     let tolerance = max(0.40, 0.060 * distance);
-    // Beyond 18m on smooth coplanar surfaces, single-fetch hardware bilinear avoids 4-8 loads;
+    let gi_size = vec2<i32>(textureDimensions(gi_history));
+    // Beyond 18m on smooth coplanar surfaces, fast point unpack avoids full normal-strict checks;
     // within 18m always run the 4-tap normal-strict bilateral upsample so 90-degree corners never bleed.
     if distance > 18.0 {
         let bi_d = textureSampleLevel(indirect_gi, linear_sampler, uv, 0.0).a;
         if bi_d > 0.0 && abs(bi_d - distance) < 0.30 * tolerance {
-            return max(textureSampleLevel(gi_history, linear_sampler, uv, 0.0).rgb, vec3(0.0));
+            let p_cell = clamp(vec2<i32>(uv * vec2<f32>(gi_size)), vec2(0), gi_size - 1);
+            return unpack_hdr8(unpack_u32_vec4(textureLoad(gi_history, p_cell, 0)).rgb);
         }
     }
-    let gi_size = vec2<i32>(textureDimensions(gi_history));
     let full_size_f = vec2<f32>(textureDimensions(scene_depth));
     let full_size_i = vec2<i32>(full_size_f);
     let inv_gi = 1.0 / vec2<f32>(gi_size);
@@ -119,7 +120,7 @@ fn sample_ssilvb_gi(uv: vec2<f32>, distance: f32, normal: vec3<f32>) -> vec3<f32
         if d_guide <= 0.0 {
             continue;
         }
-        let s_rgb = max(textureLoad(gi_history, cell, 0).rgb, vec3(0.0));
+        let s_rgb = unpack_hdr8(unpack_u32_vec4(textureLoad(gi_history, cell, 0)).rgb);
         let d_diff = abs(d_guide - distance);
         let depth_w = 1.0 - smoothstep(0.0, tolerance, d_diff);
         var n_w = 1.0;
@@ -295,11 +296,7 @@ fn terrain_effects(input: PostInput, position: vec3<f32>, distance: f32) -> vec4
         var temp_shadow: f32;
         if rel_diff < 0.035 {
             ao = textureSampleLevel(contact_visibility, linear_sampler, input.uv, 0.0);
-            let bi_sh = textureSampleLevel(gi_history, linear_sampler, input.uv, 0.0).a;
-            let pt_sh = textureLoad(gi_history, ao_cell, 0).a;
-            // On terraced hillsides (>96m), prevent 0.0 vertical risers in adjacent half-res
-            // rows from diluting shadowed horizontal top faces during bilinear filtering.
-            temp_shadow = select(bi_sh, max(bi_sh, pt_sh * 0.92), distance >= 96.0);
+            temp_shadow = unpack_u32_vec4(textureLoad(gi_history, ao_cell, 0)).a;
         } else {
             var best_diff = 1e30;
             var best_cell = ao_cell;
@@ -313,7 +310,7 @@ fn terrain_effects(input: PostInput, position: vec3<f32>, distance: f32) -> vec4
                 }
             }
             ao = textureLoad(contact_visibility, best_cell, 0);
-            temp_shadow = textureLoad(gi_history, best_cell, 0).a;
+            temp_shadow = unpack_u32_vec4(textureLoad(gi_history, best_cell, 0)).a;
         }
         var amb_occ = vec3(0.0);
         var dir_micro = 0.0;
@@ -378,17 +375,19 @@ fn terrain_effects(input: PostInput, position: vec3<f32>, distance: f32) -> vec4
         color *= (vec3(1.0) - total_occ * (1.0 - fog)) * shadow_chroma;
     }
 
-    if (ssilvb_gi || gi_rsm_bounce) && fog < 1.0 && distance > 0.08 && distance < 96.0 {
+    if (ssilvb_gi || gi_rsm_bounce || (blocklight_mode != 0u && frame.has_ray_tracing != 0u))
+        && fog < 1.0 && distance > 0.08 && distance < 96.0 {
         let bounce_irrad = sample_ssilvb_gi(input.uv, distance, surface.normal);
         if max(bounce_irrad.r, max(bounce_irrad.g, bounce_irrad.b)) > 1e-4 {
             // Estimate physically linear receiver diffuse reflectance from pre-AO color
-            // normalized by direct-light exposure (never gamma-lifted sqrt, so dark foliage
-            // and grass shadows stay deep and richly colored instead of turning chalky).
+            // normalized by direct/night exposure (never gamma-lifted sqrt, so dark foliage
+            // stays deep by day while midnight grass recovers true reflectance under RT ReSTIR DI).
             let r_safe = max(input.color.rgb, vec3(0.0));
             let r_max = max(r_safe.r, max(r_safe.g, r_safe.b));
             let r_luma = dot(r_safe, frame.luminance);
             let r_chroma = select(vec3(0.55), r_safe / max(r_max, 1e-4), r_max > 0.002);
-            let exposure_norm = mix(0.09, 0.55, direct_fraction);
+            let day_sun = smoothstep(-0.05, 0.25, frame.sun_direction.y);
+            let exposure_norm = mix(0.028, mix(0.09, 0.55, direct_fraction), day_sun);
             let est_refl = clamp(r_luma / (r_luma + exposure_norm), 0.08, 0.72);
             let r_albedo = clamp(r_chroma * est_refl, vec3(0.06), vec3(0.72));
             color += bounce_irrad * r_albedo * (0.55 * (1.0 - fog));
@@ -409,12 +408,12 @@ fn terrain_effects(input: PostInput, position: vec3<f32>, distance: f32) -> vec4
             for (var tap = 0u; tap < 4u; tap += 1u) {
                 let off = vec2<i32>(i32(tap & 1u), i32(tap >> 1u));
                 let q = clamp(corner + off, vec2(0), refl_size - 1);
-                let sample_val = textureLoad(reflection_history, q, 0);
-                if sample_val.a > 0.0 {
-                    let depth_w = 1.0 - smoothstep(0.0, tolerance, abs(sample_val.a - distance));
+                let sample_val = unpack_u32_vec4(textureLoad(reflection_history, q, 0));
+                if sample_val.a > 0.002 {
+                    let depth_w = 1.0 - smoothstep(0.0, tolerance, abs(unpack_dist8(sample_val.a) - distance));
                     let axis = select(1.0 - frac, frac, off == vec2(1));
                     let w = axis.x * axis.y * depth_w;
-                    refl_sum += sample_val.rgb * w;
+                    refl_sum += unpack_hdr8(sample_val.rgb) * w;
                     w_sum += w;
                 }
             }

@@ -73,13 +73,13 @@ fn hf_binary_search_depth(rel_xz: vec2<f32>, cam_y: f32, world_to_clip: mat4x4<f
 }
 
 fn compute(input: ComputeInput) {
-    let size = vec2<i32>(textureDimensions(terrain_heightfield));
+    let size = vec2<i32>(i32(HF_SIZE), i32(HF_SIZE));
     if !input.in_bounds || any(vec2<i32>(input.cell.xy) >= size) {
         return;
     }
     let cell = vec2<i32>(input.cell.xy);
     if !cached_distant_shadows || !shadows || frame.dimension != 0 {
-        textureStore(terrain_heightfield, cell, vec4(0.0));
+        textureStore(world_volumes, cell, vec4(0.0));
         return;
     }
 
@@ -93,14 +93,14 @@ fn compute(input: ComputeInput) {
 
     var state = vec4(0.0);
     if !teleport && all(prev_cell >= vec2(0)) && all(prev_cell < size) {
-        state = textureLoad(terrain_heightfield_previous, prev_cell, 0);
+        state = textureLoad(world_volumes_previous, prev_cell, 0);
     }
 
     // Amortize active stamping across 4 frames (2x2 staggered) -> 65k active threads/frame (~0.08 ms).
     let lane = (input.cell.x & 1u) + 2u * (input.cell.y & 1u);
     let phase = frame.frame_index & 3u;
     if lane != phase && state.g > 0.5 {
-        textureStore(terrain_heightfield, cell, vec4(state.rgb, min(state.a + 1.0, 64.0)));
+        textureStore(world_volumes, cell, vec4(state.rgb, min(state.a + 1.0, 64.0)));
         return;
     }
 
@@ -134,7 +134,7 @@ fn compute(input: ComputeInput) {
             );
             let np = prev_cell + off;
             if all(np >= vec2(0)) && all(np < size) {
-                let ns = textureLoad(terrain_heightfield_previous, np, 0);
+                let ns = textureLoad(world_volumes_previous, np, 0);
                 if ns.g > 0.45 {
                     y_sum += ns.r * ns.g;
                     w_sum += ns.g;
@@ -148,5 +148,5 @@ fn compute(input: ComputeInput) {
         }
     }
 
-    textureStore(terrain_heightfield, cell, vec4(found_y, found_conf, found_src, 0.0));
+    textureStore(world_volumes, cell, vec4(found_y, found_conf, found_src, 0.0));
 }

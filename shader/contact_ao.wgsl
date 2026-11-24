@@ -298,7 +298,7 @@ fn cached_heightfield_shadow(position: vec3<f32>, normal: vec3<f32>, distance: f
         if any(uv <= vec2(0.01)) || any(uv >= vec2(0.99)) {
             break;
         }
-        let hf = textureSampleLevel(terrain_heightfield, linear_sampler, uv, 0.0);
+        let hf = textureSampleLevel(world_volumes, linear_sampler, vec2(uv.x, uv.y * (512.0 / 768.0)), 0.0);
         if hf.g > 0.35 {
             let bias = 0.65 + 0.005 * d;
             let excess = hf.r - sample_w.y;

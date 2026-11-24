@@ -1,8 +1,8 @@
 override directional_skylight: bool = true;
 
-// Packed into the unused lower strip of cloud_aux (rows 384..415, cols 256..287),
+// Packed into the unused right strip of cloud_aux (cols 768..799, rows 128..159),
 // freeing a full persistent [[resource]] slot with zero VRAM overhead.
-const SKYLIGHT_ATLAS_OFFSET: vec2<f32> = vec2(256.0, 384.0);
+const SKYLIGHT_ATLAS_OFFSET: vec2<f32> = vec2(768.0, 128.0);
 const SKYLIGHT_ATLAS_SIZE: f32 = 32.0;
 
 fn octahedral_fold(plane: vec2<f32>) -> vec2<f32> {

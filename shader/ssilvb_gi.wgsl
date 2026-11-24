@@ -20,7 +20,7 @@ fn gi_cloud_vis(position: vec3<f32>) -> f32 {
         return 1.0;
     }
     let cell = vec2(0.5) + uv * vec2(CLOUD_MAP_WIDTH - 1.0, CLOUD_MAP_HEIGHT - 1.0)
-        + vec2(0.0, ENV_HEIGHT);
+        + CLOUD_MAP_ORIGIN;
     return clamp(textureSampleLevel(cloud_aux, scattering_atlas_sampler,
         cell / vec2<f32>(textureDimensions(cloud_aux)), 0.0).r, 0.15, 1.0);
 }

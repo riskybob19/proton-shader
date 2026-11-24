@@ -20,14 +20,26 @@ fn post(input: PostInput) -> vec4<f32> {
         for (var s = 0u; s < 3u; s += 1u) {
             let d = (f32(s) + j) * step_d;
             let wp = frame.camera_position + ray * d;
-            lpv_scatter += lpv_sample_trilinear(colored_light_volume_previous, wp, anchor);
+            lpv_scatter += lpv_sample_trilinear(world_volumes_previous, wp, anchor);
         }
         let night_or_mist = clamp(0.32 + 0.68 * (1.0 - smoothstep(-0.05, 0.25, frame.sun_direction.y)) + 0.55 * frame.rain, 0.0, 1.4);
         fog.scattering += lpv_scatter * (step_d * 0.0028 * night_or_mist * clamp(fog_strength, 0.0, 1.5));
     }
     var clouds = vec4(0.0, 0.0, 0.0, 1.0);
     if !(use_underwater_fog() && depth > 0.0) {
-        clouds = clouds_at(ray, depth, ray_length);
+        clouds = clouds_at(ray, depth, ray_length, pixel);
     }
-    return vec4(fog.scattering + fog.transmittance * clouds.rgb, clouds.a);
+    // When looking down from above the cloud deck, clouds are in front of ground valley fog.
+    let cloud_in_front = smoothstep(CLOUD_BASE - 8.0, CLOUD_BASE + 24.0, frame.camera_position.y)
+        * smoothstep(0.02, -0.08, ray.y);
+    if depth > 0.0 && cloud_in_front > 0.001 {
+        let end_dist = min(max(frame.fog_render.y, 16.0), max(frame.render_distance, 32.0));
+        let cyl_ratio = clamp(length(position.xz) / end_dist, 0.0, 1.0);
+        let rim_t = smoothstep(0.84, 1.0, cyl_ratio);
+        let rim_fade = rim_t * rim_t * (3.0 - 2.0 * rim_t) * cloud_in_front;
+        fog.scattering *= (1.0 - rim_fade);
+    }
+    let combined = mix(fog.scattering + fog.transmittance * clouds.rgb,
+        clouds.rgb + clouds.a * fog.scattering, cloud_in_front);
+    return vec4(combined, clouds.a);
 }

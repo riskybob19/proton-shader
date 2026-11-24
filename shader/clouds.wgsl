@@ -164,16 +164,15 @@ fn projected_cloud_shadow(position: vec3<f32>) -> f32 {
             return 1.0;
         }
         let stratus = cumulus_stratus();
-        let scale = cumulus_height_scale(stratus) / (CLOUD_TOP - CLOUD_BASE);
+        let h_scale = cumulus_height_scale(stratus);
         let step_size = travel * 0.5;
         var optical_depth = 0.0;
         for (var i = 0u; i < 2u; i += 1u) {
             let point = world + light * (start + (f32(i) + 0.5) * step_size);
-            let height = (point.y - CLOUD_BASE) * scale;
-            let density = cloud_height_fraction(height, cumulus_coverage(point.xz), stratus);
-            optical_depth += max(0.0, density - 0.085) * step_size;
+            let dp = nubis_dimensional_profile(point, point.y, cumulus_coverage(point.xz), stratus, h_scale).x;
+            optical_depth += max(0.0, dp - 0.085) * step_size;
         }
-        return mix(1.0, exp(-0.065 * optical_depth), 0.78 * smoothstep(0.05, 0.15, light.y));
+        return mix(1.0, exp(-0.052 * optical_depth), 0.78 * smoothstep(0.05, 0.15, light.y));
     }
     let height = CLOUD_LAYER_HEIGHT - world.y;
     if height <= 0.0 {
@@ -217,28 +216,32 @@ fn cloud_environment(direction: vec3<f32>, air: vec3<f32>) -> vec3<f32> {
     return mix(cirrus, cloud_color, clouds.coverage * horizon_fade * layer_fade * 0.91);
 }
 
-// Photon defines cloud altitude in meters relative to sea level at 10 m per block.
+// Nubis3 cloud altitudes in meters relative to sea level (160m convective deck).
 const CLOUD_BASE: f32 = 183.0;
-const CLOUD_TOP: f32 = 303.0;
-const MID_CLOUD_BASE: f32 = 383.0;
-const MID_CLOUD_TOP: f32 = 431.0;
-const CONGESTUS_BASE: f32 = 103.0;
-const CONGESTUS_TOP: f32 = 1383.0;
+const CLOUD_TOP: f32 = 343.0;
+const MID_CLOUD_BASE: f32 = 395.0;
+const MID_CLOUD_TOP: f32 = 455.0;
+const CONGESTUS_BASE: f32 = 110.0;
+const CONGESTUS_TOP: f32 = 1380.0;
 const CLOUD_PLANET_RADIUS: f32 = 637100.0;
 
-fn cloud_worley_slice(xy: vec2<f32>, z: f32) -> vec2<f32> {
+fn cloud_worley_slice3(xy: vec2<f32>, z: f32) -> vec3<f32> {
     let index = floor(z) % 64.0;
     let tile = vec2(index % 8.0, floor(index / 8.0));
     // One wrapped texel surrounds each 64×64 slice for periodic bilinear filtering.
     let uv = (tile * 66.0 + 1.0 + fract(xy) * 64.0) / 528.0;
-    return textureSampleLevel(cloud_noise_atlas, cloud_noise_atlas_sampler, uv, 0.0).rg;
+    return textureSampleLevel(cloud_noise_atlas, cloud_noise_atlas_sampler, uv, 0.0).rgb;
+}
+
+fn cloud_worley3(point: vec3<f32>) -> vec3<f32> {
+    let z = fract(point.z) * 64.0 - 0.5;
+    let slice = floor(z);
+    return mix(cloud_worley_slice3(point.xy, slice + 64.0),
+        cloud_worley_slice3(point.xy, slice + 65.0), fract(z));
 }
 
 fn cloud_worley(point: vec3<f32>) -> vec2<f32> {
-    let z = fract(point.z) * 64.0 - 0.5;
-    let slice = floor(z);
-    return mix(cloud_worley_slice(point.xy, slice + 64.0),
-        cloud_worley_slice(point.xy, slice + 65.0), fract(z));
+    return cloud_worley3(point).rg;
 }
 
 fn cloud_radial_height(y: f32, xz: vec2<f32>) -> f32 {
@@ -255,46 +258,89 @@ fn blocky_density(world: vec3<f32>, layer: u32) -> f32 {
         * (1.0 - smoothstep(6.0, 8.0, abs(world.y - altitude)));
 }
 
-fn cumulus_density(world: vec3<f32>, altitude: f32, coverage: f32, stratus: f32, altitude_scale: f32) -> f32 {
-    let height = clamp((altitude - CLOUD_BASE) * altitude_scale / (CLOUD_TOP - CLOUD_BASE), 0.0, 1.0);
-    var density = cloud_height_fraction(height, coverage, stratus);
-    if density <= 0.0 {
+// Nubis3 3-gradient dimensional profile (.x) + billow-to-wispy detail selector (.y).
+fn nubis_dimensional_profile(world: vec3<f32>, altitude: f32, coverage: f32, stratus: f32, altitude_scale: f32) -> vec2<f32> {
+    let h = clamp((altitude - CLOUD_BASE) * altitude_scale / (CLOUD_TOP - CLOUD_BASE), 0.0, 1.0);
+    let bottom_grad = smoothstep(0.0, mix(0.11, 0.07, stratus), h);
+    let top_grad = 1.0 - smoothstep(mix(0.62, 0.42, stratus), 1.0, h);
+    let edge_grad = cloud_height_fraction(h, coverage, stratus);
+    let dome_lift = pow(max(coverage, 0.0), 0.78) * bottom_grad * top_grad;
+    let combined = mix(edge_grad, max(edge_grad, dome_lift),
+        0.52 * (1.0 - stratus) * smoothstep(0.12, 0.48, coverage));
+    let dim_profile = clamp(combined * 1.32, 0.0, 1.0);
+    if dim_profile <= 0.0 {
+        return vec2(0.0, 0.0);
+    }
+    let wind = weather_wind();
+    let base_wisp = 1.0 - smoothstep(0.04, 0.22, h);
+    let outer_wisp = 1.0 - smoothstep(0.04, 0.34, dim_profile);
+    let top_billow = smoothstep(0.22, 0.72, h) * (1.0 - 0.70 * stratus);
+    let detail_type = clamp(
+        max(max(base_wisp * 0.85, outer_wisp * (0.65 + 0.35 * wind)), stratus * 0.82)
+        - 0.38 * top_billow + 0.16 * wind * smoothstep(0.65, 1.0, h),
+        0.0, 1.0,
+    );
+    return vec2(dim_profile, detail_type);
+}
+
+// Nubis3 runtime 3D up-rezzer: carves high-frequency Worley + Alligator detail out of
+// coarse dimensional_profile envelopes without storing dense gigabyte voxel grids.
+fn nubis_uprez_density(world: vec3<f32>, altitude: f32, dim_profile: f32, detail_type: f32,
+    stratus: f32, altitude_scale: f32) -> f32 {
+    if dim_profile <= 0.001 {
         return 0.0;
     }
-
+    let h = clamp((altitude - CLOUD_BASE) * altitude_scale / (CLOUD_TOP - CLOUD_BASE), 0.0, 1.0);
     let drift = cloud_drift(frame.time, 0u);
     let horiz_dist = length(world.xz - frame.camera_position.xz);
-    // Fade sub-Nyquist high-frequency Worley erosion on distant clouds so
-    // horizon silhouettes stay smooth instead of aliasing into fuzzy jagged teeth.
-    let fine_lod = 1.0 - smoothstep(850.0, 2800.0, horiz_dist);
-    let bubbly_lod = 1.0 - 0.50 * smoothstep(1600.0, 5200.0, horiz_dist);
+    // Distance-adaptive LOD fades sub-Nyquist Worley/Alligator teeth on distant silhouettes.
+    let fine_lod = 1.0 - smoothstep(900.0, 2800.0, horiz_dist);
+    let bubbly_lod = 1.0 - 0.45 * smoothstep(1600.0, 5200.0, horiz_dist);
 
-    // Subtle Nubis3 updraft curl & altitude wind shear: keeps flat LCL condensation
-    // bases smooth while adding gentle organic billow displacement toward cloud tops.
-    let wind_shear = normalize(drift + vec2(0.001, 0.0)) * (10.0 * height * height * (1.0 - 0.65 * stratus));
+    // Updraft curl & altitude wind shear: flat LCL bases stay calm, upper domes curl & lean.
+    let wind_shear = normalize(drift + vec2(0.001, 0.0)) * (11.0 * h * h * (1.0 - 0.65 * stratus));
     let curl_grad = cloud_noise((world.xz + drift) * 0.0018).yz;
     let curl_vec = vec2(curl_grad.y, -curl_grad.x);
-    let curl_amp = (2.5 + 6.5 * height * height) * (1.0 - 0.72 * stratus) * bubbly_lod;
+    let curl_amp = (2.5 + 7.5 * h * h) * (1.0 - 0.72 * stratus) * bubbly_lod;
     let warped_xz = world.xz + wind_shear + curl_vec * curl_amp;
 
     let p = vec3(warped_xz.x, CLOUD_PLANET_RADIUS + world.y - 63.0, warped_xz.y);
-    let bubbly = cloud_worley((p + vec3(drift.x, 0.0, drift.y) * 1.2) * 0.009).r;
-    let fine_position = vec3(warped_xz.x, world.y, warped_xz.y) + vec3(drift.x, 0.0, drift.y) * 1.4;
-    let fine_xz = CLOUD_ROTATION * fine_position.xz;
-    let swirley = select(0.0, cloud_worley(vec3(fine_xz.x, fine_position.y, fine_xz.y) * 0.05).g, fine_lod > 0.01);
+    let n_macro = cloud_worley3((p + vec3(drift.x, 0.0, drift.y) * 1.2) * 0.0079);
+
+    var n_fine = vec3(0.5, 0.5, 0.3);
+    if fine_lod > 0.02 {
+        let fine_position = vec3(warped_xz.x, world.y, warped_xz.y) + vec3(drift.x, 0.0, drift.y) * 1.4;
+        let fine_xz = CLOUD_ROTATION * fine_position.xz;
+        // Seamless 3D macro domain-warp twists fine wisps into random 3D orientations
+        // across every cloud lobe so micro-features never align radially or on a grid.
+        let fine_warp = (n_macro.gbr - vec3(0.5)) * 24.0;
+        n_fine = cloud_worley3((vec3(fine_xz.x, fine_position.y, fine_xz.y) + fine_warp) * 0.037);
+    }
+
+    // Detail-type blend: billowy cauliflower lobes (0) vs wispy wind-sheared filaments (1).
     let torn = cloud_linear(0.66, 0.9, weather_wind()) * (1.0 - stratus);
-    let detail = mix(vec2(0.33, 0.40) * (1.0 + 0.5 * torn), vec2(0.07, 0.10),
-        vec2(stratus * stratus, stratus)) * vec2(bubbly_lod, fine_lod);
-    // Keep LCL base slightly softer/flatter and accentuate billowing tops.
-    let billow_profile = mix(0.65, 1.12, smoothstep(0.12, 0.68, height));
-    let detail_fade = 0.20 * smoothstep(0.85, 1.0, 1.0 - height)
-        - 0.35 * smoothstep(0.05, 0.5, height) + 0.6;
-    density -= dot(detail, vec2(bubbly * bubbly * billow_profile, swirley * swirley * detail_fade))
-        * photon_dampen(clamp(1.0 - density, 0.0, 1.0));
-    let edge = mix(vec2(3.0, 12.0), vec2(2.0, 7.0), stratus * stratus);
-    let sharpness = mix(edge.x, edge.y, height) * mix(0.45, 1.0, fine_lod);
-    return cloud_lift(max(0.0, density), sharpness)
-        * (0.1 + 0.9 * smoothstep(0.18, 0.68, height));
+    let billow_trough = 1.0 - smoothstep(0.08, 0.68, n_macro.b);
+    let billow_erosion = mix(n_macro.r * n_macro.r, billow_trough * 0.78, 0.40);
+    let wispy_erosion = mix(n_macro.g * n_macro.g, smoothstep(0.08, 0.65, n_macro.b), 0.45);
+    let erosion = mix(billow_erosion, wispy_erosion, detail_type);
+    let fine_billow = mix(n_fine.g * n_fine.g, 1.0 - smoothstep(0.08, 0.68, n_fine.b), 0.35);
+    let micro = mix(fine_billow, smoothstep(0.08, 0.65, n_fine.b), detail_type) * fine_lod;
+
+    let macro_w = mix(0.26 * (1.0 + 0.35 * torn), 0.07, stratus * stratus) * bubbly_lod;
+    let fine_w = mix(0.24 * (1.0 + 0.35 * torn), 0.09, stratus)
+        * (0.20 * smoothstep(0.85, 1.0, 1.0 - h) - 0.25 * smoothstep(0.05, 0.5, h) + 0.70);
+
+    let env_protect = pow(clamp(1.0 - dim_profile, 0.0, 1.0), 1.15);
+    let d = dim_profile - (macro_w * erosion + fine_w * micro) * env_protect;
+    let edge = mix(vec2(3.5, 13.0), vec2(2.0, 7.0), stratus * stratus);
+    let sharpness = mix(edge.x, edge.y, h) * mix(0.50, 1.0, fine_lod);
+    let lcl_soft = 0.55 + 0.45 * smoothstep(0.0, 0.16, h);
+    return cloud_lift(max(0.0, d), sharpness) * lcl_soft * mix(1.35, 1.0, stratus);
+}
+
+fn cumulus_density(world: vec3<f32>, altitude: f32, coverage: f32, stratus: f32, altitude_scale: f32) -> f32 {
+    let profile = nubis_dimensional_profile(world, altitude, coverage, stratus, altitude_scale);
+    return nubis_uprez_density(world, altitude, profile.x, profile.y, stratus, altitude_scale);
 }
 
 fn mid_stratus() -> f32 {
@@ -333,8 +379,9 @@ fn mid_cloud_density(world: vec3<f32>, altitude: f32, stratus: f32, cover: vec2<
         return 0.0;
     }
     let coord = vec3(p.x + 0.2 * drift.x, CLOUD_PLANET_RADIUS + world.y - 63.0, p.y + 0.2 * drift.y);
-    let worley = cloud_worley(coord * 0.03).g;
-    density -= 0.2 * worley * worley * photon_dampen(clamp(1.0 - density, 0.0, 1.0)) * (1.0 - 0.85 * stratus);
+    let w3 = cloud_worley3(coord * 0.03);
+    let erosion = mix(w3.g * w3.g, 1.0 - smoothstep(0.08, 0.65, w3.b), 0.35);
+    density -= 0.20 * erosion * photon_dampen(clamp(1.0 - density, 0.0, 1.0)) * (1.0 - 0.85 * stratus);
     let edge = mix(vec2(3.0, 14.0), vec2(2.0, 7.0), stratus);
     return cloud_lift(max(0.0, density), mix(edge.x, edge.y, height))
         * (0.1 + 0.9 * smoothstep(0.2, 0.7, height));
@@ -355,16 +402,14 @@ fn cumulus_density_fast(altitude: f32, coverage: f32, stratus: f32, altitude_sca
     if density <= 0.0 {
         return 0.0;
     }
-    // Match upstream Photon's non-Worley optical depth fallback (worley = 0.5 -> worley^2 = 0.25)
-    // so thin cloud edges never drop to zero optical depth and blow out in forward scattering.
-    let detail = mix(vec2(0.33, 0.40), vec2(0.07, 0.10), vec2(stratus * stratus, stratus));
+    let detail = mix(vec2(0.32, 0.34), vec2(0.08, 0.10), vec2(stratus * stratus, stratus));
     let detail_fade = 0.20 * smoothstep(0.85, 1.0, 1.0 - height)
-        - 0.35 * smoothstep(0.05, 0.5, height) + 0.6;
+        - 0.30 * smoothstep(0.05, 0.5, height) + 0.65;
     density -= dot(detail, vec2(0.20, 0.20 * detail_fade))
         * photon_dampen(clamp(1.0 - density, 0.0, 1.0));
     let edge = mix(vec2(3.0, 12.0), vec2(2.0, 7.0), stratus * stratus);
     return cloud_lift(max(0.0, density), mix(edge.x, edge.y, height))
-        * (0.1 + 0.9 * smoothstep(0.2, 0.7, height));
+        * (0.12 + 0.88 * smoothstep(0.14, 0.62, height));
 }
 
 fn mid_cloud_density_fast(world: vec3<f32>, altitude: f32, stratus: f32, cover: vec2<f32>) -> f32 {
@@ -426,8 +471,10 @@ fn congestus_density(world: vec3<f32>, relative: vec3<f32>, altitude: f32, amoun
         return 0.0;
     }
     let p = vec3(world.x, CLOUD_PLANET_RADIUS + world.y - 63.0, world.z);
-    let a = cloud_worley((p + vec3(drift.x, 0.0, drift.y) * 0.2) * 0.0005).g;
-    let b = cloud_worley((p + vec3(drift.x, 0.0, drift.y) * 0.4) * 0.0023).g;
+    let w3a = cloud_worley3((p + vec3(drift.x, 0.0, drift.y) * 0.2) * 0.0005);
+    let w3b = cloud_worley3((p + vec3(drift.x, 0.0, drift.y) * 0.4) * 0.0023);
+    let a = mix(w3a.g, 1.0 - smoothstep(0.08, 0.65, w3a.b), 0.40);
+    let b = mix(w3b.g, 1.0 - smoothstep(0.08, 0.65, w3b.b), 0.35);
     let edge = clamp(1.0 - density, 0.0, 1.0);
     let detail = 0.20 * smoothstep(0.85, 1.0, 1.0 - height) - 0.35 * smoothstep(0.05, 0.5, height) + 0.8;
     density -= 7.0 * edge * edge * a * a * a * height * height;

@@ -535,7 +535,7 @@ fn water_heightfield_reflection(origin: vec3<f32>, ray: vec3<f32>, start_dist: f
     let max_d = min(460.0, max(start_dist + 88.0, (290.0 - world_origin.y) / max(ray.y, 0.05)));
     let span = max(max_d - start_dist, 1.0);
     const STEPS: u32 = 6u;
-    let hf_size = vec2<i32>(textureDimensions(terrain_heightfield_previous));
+    let hf_size = vec2<i32>(i32(HF_SIZE), i32(HF_SIZE));
     for (var i = 0u; i < STEPS; i += 1u) {
         let t = (f32(i) + 0.5) / f32(STEPS);
         let d = start_dist + span * (0.22 * t + 0.78 * t * t);
@@ -545,7 +545,7 @@ fn water_heightfield_reflection(origin: vec3<f32>, ray: vec3<f32>, start_dist: f
             break;
         }
         let hf_cell = clamp(vec2<i32>(uv * vec2<f32>(hf_size)), vec2(0), hf_size - 1);
-        let hf = textureLoad(terrain_heightfield_previous, hf_cell, 0);
+        let hf = textureLoad(world_volumes_previous, hf_cell, 0);
         if hf.g > 0.35 && hf.r > p_w.y + 1.2 {
             let snow_w = smoothstep(116.0, 142.0, hf.r);
             let mtn_albedo = mix(vec3(0.09, 0.13, 0.08), vec3(0.62, 0.66, 0.72), snow_w);

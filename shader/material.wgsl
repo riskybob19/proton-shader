@@ -753,6 +753,7 @@ fn material(input: MaterialInput) -> Surface {
         let sheen_amount = select(select(0.0, 1.0, plant), 0.5, leaves);
         let leaf_strength = clamp(tree_scattering / 1.25, 0.0, 1.0);
 
+        let c_max = max(albedo.r, max(albedo.g, albedo.b));
         if turf {
             let layer = foliage_optics(albedo, 0.35);
             let soil = vec3(0.12, 0.072, 0.038);
@@ -765,9 +766,10 @@ fn material(input: MaterialInput) -> Surface {
         var vis = smoothstep(14.1 / 15.0, 14.9 / 15.0, sky);
         if leaves {
             // Match the near 3D shadow-map + GTAO crown self-occlusion so distant canopies
-            // (>114m) have the exact same deep shaded underside and interior contrast.
-            let crown_vis = clamp(0.10 + 0.90 * smoothstep(-0.05, 0.62, signed_no_l), 0.08, 1.0)
-                * mix(0.22, 1.0, mesh_ao * mesh_ao * mesh_ao);
+            // (>144m) have the exact same deep shaded underside and interior contrast.
+            let ao2_m = mesh_ao * mesh_ao;
+            let crown_vis = clamp(0.06 + 0.94 * smoothstep(-0.02, 0.64, signed_no_l), 0.06, 1.0)
+                * mix(0.14, 1.0, ao2_m * ao2_m);
             vis *= crown_vis;
         }
         let diffuse_term = terrain_lift(no_l, 0.25) * (1.0 - 0.5 * subsurface) * ao * ao;
@@ -785,6 +787,25 @@ fn material(input: MaterialInput) -> Surface {
         }
         sunlight *= light;
 
+        // Low-cost analytic GGX specular on distant sunlit leaves and terrain so waxy
+        // canopy highlights extend seamlessly past the 144m shadow-map boundary.
+        var specular = vec3(0.0);
+        if !plant && no_l > 0.0 && vis > 0.005 {
+            let value = pow(max(c_max, 0.0), 1.0 / 2.2);
+            var smoothness = select(0.33 * smoothstep(0.2, 0.6, value),
+                select(0.5 * smoothstep(0.16, 0.5, value), 0.18 * smoothstep(0.22, 0.65, value), cherry_leaves), leaves);
+            if (leaves || turf) && sky > 0.72 && frame.temperature > 0.15 && frame.downfall > 0.25 {
+                let night_age = fract(frame.day_time + 0.5);
+                let dawn_dew = smoothstep(0.42, 0.50, night_age) * (1.0 - smoothstep(0.56, 0.70, night_age))
+                    * smoothstep(0.72, 0.95, sky) * (1.0 - 0.75 * frame.rain) * weather_humidity();
+                smoothness = mix(smoothness, select(0.42, 0.52, leaves), dawn_dew * 0.55);
+            }
+            let base_rough = (1.0 - smoothness) * (1.0 - smoothness);
+            let dist_var = mix(0.012, 0.055, smoothstep(20736.0, 144400.0, dist_sq));
+            let roughness = sqrt(clamp(base_rough * base_rough + dist_var, 0.0004, 1.0));
+            specular = terrain_specular(normal, view, no_l, roughness, vec3(0.02), 0u, albedo) * (light * vis * ao);
+        }
+
         let blocklight = surface_blocklight(input.position, input.light, ao, directional);
         let cave = 0.15 * (1.0 - sky2) * (1.0 - 0.7 * frame.darkness);
         let base = (cave + 1.5 * frame.night_vision) * ao * directional;
@@ -799,7 +820,7 @@ fn material(input: MaterialInput) -> Surface {
             ambient += diffuse_scale * terrain_skylight(normal, sky, ao, subsurface, false);
         }
 
-        let direct_rgb = diffuse_scale * sunlight;
+        let direct_rgb = diffuse_scale * sunlight + specular;
         let color = direct_rgb + ambient;
         if outside_shadow_map && (shadows || contact_ao > 0.0) {
             let inv_lum = 1.0 / max(dot(color, frame.luminance), 1e-5);
